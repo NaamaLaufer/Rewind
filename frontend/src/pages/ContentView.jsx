@@ -117,6 +117,7 @@ export default function ContentView() {
       streamRef.current = stream;
       setCam({ status: "on", error: null });
       setCamRefresh((k) => k + 1); // labels are only available after permission
+      if (!isReview) playerRef.current?.play(); // measuring started -> start the video too
     } catch (e) {
       setCam({ status: "consent", error: cameraErrorMessage(e) });
     }
@@ -448,7 +449,8 @@ export default function ContentView() {
 
               {(cam.status === "consent" || cam.status === "starting") && (
                 <ConsentPanel starting={cam.status === "starting"} error={cam.error} refreshKey={camRefresh}
-                  onEnable={enableCamera} onSkip={() => setCam({ status: "skipped", error: null })} />
+                  onEnable={enableCamera}
+                  onSkip={() => { setCam({ status: "skipped", error: null }); if (!isReview) playerRef.current?.play(); }} />
               )}
 
               {cam.status === "skipped" && (
@@ -472,7 +474,7 @@ export default function ContentView() {
                   {engine.status === "loading" && <div className="msg msg-info" role="status">טוענת את מודל הריכוז (פעם ראשונה עשויה לקחת כמה שניות)...</div>}
                   {engine.status === "error" && <div className="msg msg-error" role="alert">{engine.error}</div>}
                   <ScoreCard score={engine.score} smoothed={engine.smoothed} modelLevel={engine.level}
-                    framesFilled={engine.framesFilled} noFace={engine.noFace} />
+                    framesFilled={engine.framesFilled} noFace={engine.noFace} fps={engine.fps} detectMs={engine.detectMs} />
                 </>
               )}
               <div className={cam.status === "on" ? "card" : "cam-hidden"} style={cam.status === "on" ? { padding: 12 } : undefined}>

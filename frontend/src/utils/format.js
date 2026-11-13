@@ -43,8 +43,9 @@ export const formatScore = (s) => (s === null || s === undefined ? "—" : Numbe
 /** CSS color variable for a score: mint (high), amber (middle), coral (low). */
 export function scoreColor(score) {
   if (score === null || score === undefined) return "var(--muted)";
-  if (score >= 0.7) return "var(--mint)";
-  if (score >= 0.4) return "var(--amber)";
+  const s = Math.round(score * 100) / 100; // same rounding as the number shown
+  if (s >= 0.7) return "var(--mint)";
+  if (s >= 0.4) return "var(--amber)";
   return "var(--coral)";
 }
 

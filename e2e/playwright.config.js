@@ -7,6 +7,8 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const faceFile = fileURLToPath(new URL("./fixtures/face.y4m", import.meta.url));
+// A face that v4_7 scores LOW (~0.24): Xiph "news" sequence. Used to test the alert + debt loop.
+const lowFile = fileURLToPath(new URL("./fixtures/low.y4m", import.meta.url));
 const baseArgs = ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream", "--autoplay-policy=no-user-gesture-required"];
 
 export default defineConfig({
@@ -26,8 +28,13 @@ export default defineConfig({
   },
   projects: [
     {
+      name: "lowfocus",
+      testMatch: /lowfocus\.spec/,
+      use: { launchOptions: { args: [...baseArgs, `--use-file-for-fake-video-capture=${lowFile}`] } },
+    },
+    {
       name: "face",
-      testIgnore: /noface\.spec/,
+      testIgnore: /(noface|lowfocus)\.spec/,
       use: {
         launchOptions: {
           args: existsSync(faceFile) ? [...baseArgs, `--use-file-for-fake-video-capture=${faceFile}`] : baseArgs,

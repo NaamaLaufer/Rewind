@@ -1,5 +1,6 @@
 // MediaPipe FaceLandmarker (478 landmarks), loaded once from local files (no CDN at runtime).
 import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
+import { preferredDelegate } from "./config.js";
 
 let promise = null;
 
@@ -12,11 +13,16 @@ async function create() {
     outputFaceBlendshapes: false,
     outputFacialTransformationMatrixes: false,
   });
+  // CPU (wasm + XNNPACK) by default: predictable speed on every machine. GPU via WebGL is faster
+  // on a real GPU but very slow on machines without one (software WebGL). If the preferred
+  // delegate fails to initialize, fall back to the other one.
+  const first = preferredDelegate();
+  const second = first === "CPU" ? "GPU" : "CPU";
   try {
-    return await FaceLandmarker.createFromOptions(fileset, options("GPU"));
+    return await FaceLandmarker.createFromOptions(fileset, options(first));
   } catch (e) {
-    console.warn("FaceLandmarker GPU delegate failed, falling back to CPU", e);
-    return FaceLandmarker.createFromOptions(fileset, options("CPU"));
+    console.warn(`FaceLandmarker ${first} delegate failed, falling back to ${second}`, e);
+    return FaceLandmarker.createFromOptions(fileset, options(second));
   }
 }
 
