@@ -42,3 +42,6 @@ backend/Dockerfile.test.local
 
 e2e/fixtures/experiments/
 
+test-results/
+playwright-report/
+
