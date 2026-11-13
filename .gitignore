@@ -1,0 +1,42 @@
+# Secrets
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Build artifacts / large assets copied at build time
+frontend/public/models/*.onnx
+frontend/public/mediapipe/
+frontend/public/ort/
+
+# Submission zips
+*.zip
+submission/*.zip
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Playwright
+frontend/test-results/
+frontend/playwright-report/
+e2e/fixtures/*.y4m
+
+# Course materials (large ONNX/PNG inputs, kept locally only)
+materials/
+backend/Dockerfile.test.local
+
