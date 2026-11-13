@@ -40,3 +40,5 @@ e2e/fixtures/*.y4m
 materials/
 backend/Dockerfile.test.local
 
+e2e/fixtures/experiments/
+
