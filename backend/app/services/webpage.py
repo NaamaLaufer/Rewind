@@ -107,4 +107,6 @@ async def fetch_readable_text(url: str) -> tuple[list[str], str | None]:
     if not paragraphs:
         raise WebpageError("לא הצלחנו לשלוף טקסט קריא מהדף הזה. נסי קישור אחר, "
                            "או העתיקי את הטקסט והוסיפי אותו כ'טקסט להדבקה'")
-    return paragraphs, site or urlparse(current).hostname
+    # The domain is clearer than metadata names like "Wikimedia Foundation, Inc.".
+    host = (urlparse(current).hostname or "").removeprefix("www.")
+    return paragraphs, host or site
