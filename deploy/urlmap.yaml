@@ -1,0 +1,18 @@
+# URL map of the HTTPS load balancer (imported by deploy.ps1; __PROJECT__ is replaced at deploy time).
+# Everything goes to the frontend (nginx + the React build), except the API and the health check,
+# which go straight to the backend. Same origin for both -> no CORS, the client calls /api relatively.
+name: rewind-urlmap
+defaultService: https://www.googleapis.com/compute/v1/projects/__PROJECT__/global/backendServices/rewind-frontend-bs
+hostRules:
+- hosts:
+  - '*'
+  pathMatcher: rewind-paths
+pathMatchers:
+- name: rewind-paths
+  defaultService: https://www.googleapis.com/compute/v1/projects/__PROJECT__/global/backendServices/rewind-frontend-bs
+  pathRules:
+  - paths:
+    - /api
+    - /api/*
+    - /health
+    service: https://www.googleapis.com/compute/v1/projects/__PROJECT__/global/backendServices/rewind-backend-bs

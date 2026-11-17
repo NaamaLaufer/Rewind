@@ -424,3 +424,84 @@
 - **CORS:** בענן `ALLOWED_ORIGINS=https://<DOMAIN>` (לא `*`). בפועל לא נדרש, כי הכול באותו origin.
 - **`/docs`:** כש-`ENV=production` התיעוד ב-`/api/docs` וב-`/api/openapi.json`, כי ה-LB שולח לשרת רק `/api/*` ו-`/health`. מקומית נשאר `localhost:8000/docs`. בחרנו לא לכבות אותו: הוא לא חושף סודות, ועוזר לבודק ולהגנה.
 - **הסבר בהגנה:** "HSTS רק כשהבקשה באמת הגיעה ב-HTTPS; התיעוד בענן נמצא בנתיב שה-LB מנתב לשרת."
+
+### D-056 · Cloud Run, שני שירותים נפרדים, ומספר מופעים
+- **מה בחרנו:**
+  - `rewind-backend`: min **2**, max 5, 512Mi ו-1 vCPU.
+  - `rewind-frontend`: min **1**, max 5, 256Mi.
+  - אותן תמונות של מטלה 3 (D-052), עם tag `1.1.0` ל-`linux/amd64`, ב-Artifact Registry באותו region.
+- **אפשרויות שנשקלו:** א) VM עם docker compose; ב) GKE; ג) Cloud Run (נבחר).
+- **למה:**
+  - Google מנהלת את השרתים, העדכונים והגדילה.
+  - תקלה בלקוח לא מפילה את השרת, ולהפך.
+  - ההוראות ממליצות על לפחות 2 מופעים מאחורי ה-LB, כדי שבאמת יהיה איזון עומסים. במינימום 2 גם אין cold start בזמן הבדיקה.
+  - VM היה מחייב instance group, firewall ועדכוני מערכת. GKE מסובך מדי לפרויקט כזה.
+- **מה המחיר (הערכה, europe-west1, מחירון 2026, לבדוק במחשבון https://cloud.google.com/products/calculator):**
+  - מופע מינימום שלא מטפל בבקשות מחויב בתעריף "idle": בערך 7–10$ לחודש למופע של 1 vCPU.
+  - backend ×2 ≈ 15–20$, frontend ×1 (256Mi) ≈ 7–9$.
+  - **ביחד עם ה-LB (D-058): כ-40–50$ לחודש, מתוך קרדיט של 300$.** לכן יש teardown אחרי הבדיקה (D-063).
+- **הסבר בהגנה:** "Cloud Run מריץ את אותם קונטיינרים בלי לנהל שרתים. לשרת יש לפחות שני מופעים, כדי שה-LB יאזן ושלא יהיה cold start."
+
+### D-057 · MongoDB Atlas M0 ב-GCP, באותו region
+- **מה בחרנו:** cluster M0 חינמי ב-Atlas על GCP, ב-`WESTERN_EUROPE` (בלגיה), השם של Atlas ל-`europe-west1`, ליד Cloud Run. פרויקט `rewind`, cluster בשם `rewind`, משתמש `rewind-app` עם `readWrite@rewind` בלבד, וסיסמה אקראית של 32 תווים אלפאנומריים (`RandomNumberGenerator`).
+- **אפשרויות שנשקלו:** Cloud SQL (עולה כסף כל שעה, ומחייב מעבר ל-SQL); מונגו על VM (דיסק, גיבוי ועדכונים עלינו); Atlas (נבחר).
+- **למה:** הקוד כבר מדבר MongoDB, אז לא משנים שורת קוד. Atlas מנוהל, חינמי, ומתחבר ב-TLS (`mongodb+srv`).
+- **איך נוצר:** `deploy.ps1` יוצר הכול עם Atlas CLI אם יש התחברות. אחרת המשתמשת יוצרת את ה-cluster ידנית (USER_TODO) ושומרת את ה-URI ב-`deploy/.secrets/mongodb_uri.txt` (ב-.gitignore). הסקריפט מעביר אותו ל-Secret Manager ו**מוחק את הקובץ**. ה-URI לא מודפס אף פעם.
+- **הסבר בהגנה:** "Atlas הוא MongoDB מנוהל וחינמי, באותו אזור כמו השרת, כך שהקוד לא השתנה."
+
+### D-058 · Global External Application Load Balancer, ניתוב לפי נתיב
+- **מה בחרנו:**
+  - LB גלובלי (`EXTERNAL_MANAGED`) עם IP סטטי `rewind-ip`.
+  - 2 Serverless NEGs ושני backend services, **בלי health check**: Serverless NEG לא תומך בו, ולכן גם לא צריך firewall.
+  - URL map מקובץ YAML (`deploy/urlmap.yaml`): `/api`, `/api/*` ו-`/health` הולכים לשרת, וכל השאר ללקוח.
+- **למה:** כתובת אחת ודומיין אחד, ולכן אין CORS, והלקוח פונה ל-`/api` יחסי בדיוק כמו ב-compose. YAML קריא וקל להסביר. `url-maps import` יוצר או מחליף, כך שהוא אידמפוטנטי.
+- **מה המחיר:** forwarding rules (443 ו-80) עולים כ-0.025$ לשעה לחמשת הכללים הראשונים, כלומר כ-18$ לחודש, ועוד תעבורה (זניחה אצלנו).
+- **הסבר בהגנה:** "ה-LB מקבל את כל התעבורה ב-IP אחד ומחליט לפי הנתיב: API לשרת, כל השאר ללקוח."
+
+### D-059 · HTTPS: תעודה מנוהלת של Google והפניה מ-HTTP
+- **מה בחרנו:** `rewind-cert` (Google-managed) לדומיין של No-IP, ו-forwarding rule על 443. על 80 יש URL map נפרד (`rewind-http-redirect`) עם `httpsRedirect: true` ו-301, על **אותו IP**.
+- **למה:** `getUserMedia` (המצלמה) עובד רק ב-secure context: HTTPS או localhost. בלי HTTPS האתר שלנו פשוט לא עובד. Google מחדשת את התעודה לבד, וההפניה מגינה על מי שמקלידה `http://`.
+- **מה המחיר:** חינם. ההנפקה לוקחת עד 60 דקות **אחרי** שרשומת ה-A מצביעה על ה-IP. `FAILED_NOT_VISIBLE` = רשומת ה-A לא נכונה.
+- **הסבר בהגנה:** "בלי HTTPS הדפדפן לא נותן גישה למצלמה. התעודה מנוהלת ומתחדשת לבד, ו-http מפנה ל-https."
+
+### D-060 · Cloud Run נגיש רק דרך ה-LB
+- **מה בחרנו:** `--ingress internal-and-cloud-load-balancing` + `--allow-unauthenticated`. אם מדיניות ארגון חוסמת את `allUsers`, הסקריפט עובר ל-`--no-invoker-iam-check`. בדקנו ב-`gcloud run deploy --help` ש-gcloud 594 תומך בדגל.
+- **למה:** כל התעבורה עוברת ב-HTTPS וב-LB, עם התעודה, ההפניה וה-HSTS. כתובות `*.run.app` הישירות מחזירות 404 מבחוץ (`verify.ps1` בודק). `allow-unauthenticated` נדרש כי האתר ציבורי, וההרשאה שלנו היא ה-JWT באפליקציה.
+- **הסבר בהגנה:** "השירותים לא נגישים ישירות מהאינטרנט, רק דרך ה-LB."
+
+### D-061 · סודות ב-Secret Manager, ו-Service Account ייעודי לכל שירות
+- **מה בחרנו:**
+  - `MONGODB_URI` ו-`JWT_SECRET` (ו-`GEMINI_API_KEY` רק אם יש מפתח) נשמרים **רק** ב-Secret Manager, ומחוברים עם `--set-secrets` (Reference a secret).
+  - `ENV`, `DB_NAME`, `ALLOWED_ORIGINS` ו-`GEMINI_MODEL` הם הגדרות, ולכן משתני סביבה רגילים.
+  - Service Account `rewind-backend` מקבל `roles/secretmanager.secretAccessor` **על כל סוד בנפרד**, לא על הפרויקט. ל-`rewind-frontend` אין שום הרשאה.
+  - `JWT_SECRET` נוצר **פעם אחת**: 64 תווי hex מ-`RandomNumberGenerator`. אם הסוד קיים, הסקריפט לא נוגע בו, כי סוד חדש היה מנתק את כל המשתמשים.
+  - קובץ זמני נכתב בלי שורה חדשה (`[IO.File]::WriteAllText`) ונמחק ב-`finally`.
+- **למה:** least privilege. הקוד לא משתנה, רק המקור של משתני הסביבה. סוד לא מופיע בקוד, ב-Git, בתמונה, בלוג או ב-Console.
+- **בדיקה:** הסריקה `git grep -n -I -E "mongodb\+srv://[^<]|AIza[0-9A-Za-z_-]{20,}|JWT_SECRET=[0-9a-f]{32,}"` לפני כל commit (נקייה). `.dockerignore` מוציא את `.env`. `deploy/.secrets/`, `*.secret` ו-`*.key` נמצאים ב-.gitignore.
+- **הסבר בהגנה:** "הסודות רק ב-Secret Manager, והשרת היחיד שיכול לקרוא אותם הוא ה-Service Account שלו, ורק את שלו."
+
+### D-062 · Atlas Network Access: `0.0.0.0/0`, ומה מפצה על זה
+- **מה בחרנו:** access list פתוח (`0.0.0.0/0`).
+- **למה:** ל-Cloud Run אין IP יוצא קבוע. IP קבוע מחייב Serverless VPC connector + Cloud NAT + IP שמור, וזה עולה כסף כל שעה ומסבך.
+- **מה מפצה:**
+  1. משתמש DB ייעודי עם `readWrite` על DB `rewind` בלבד (לא admin).
+  2. סיסמה אקראית של 32 תווים, שקיימת רק ב-Secret Manager.
+  3. TLS חובה (`mongodb+srv`).
+  4. אף אחד לא רואה את ה-URI: הוא לא בקוד, לא ב-Git ולא בלוג.
+- **הסבר בהגנה:** "ל-Cloud Run אין IP קבוע. במקום רשימת IP, ההגנה היא משתמש עם הרשאה מינימלית, סיסמה ארוכה ואקראית, והצפנה."
+
+### D-063 · זמינות, עלות ותחזוקה: Uptime check, Budget, וסקריפטים אידמפוטנטיים
+- **Uptime check** `rewind-health`: `https://DOMAIN/health` כל 5 דקות, ובודק שהגוף מכיל `ok` (תשובת 503 מכילה `unavailable`). אם יש `$ALERT_EMAIL`, ההתראה במייל (`alert.ps1`).
+- **Budget** `rewind-budget`: 50$, עם התראות ב-50%, ב-90% וב-100%. ההתראה נשלחת למנהלי החיוב כברירת מחדל.
+- **סקריפטים** (PowerShell, כי הסביבה Windows):
+  - `deploy.ps1`: הכול, אידמפוטנטי (describe לפני כל create), עם `-DryRun` שמדפיס את כל הפקודות.
+  - `redeploy.ps1`: רק גרסה חדשה.
+  - `status.ps1 -Wait`: DNS, תעודה ו-/health, כל 2 דקות עד 60 דקות.
+  - `verify.ps1`: כל טבלת הבדיקה, כותב ל-`docs/A4_VERIFY_RESULTS.md`.
+  - `teardown.ps1 -Yes`: מוחק רק מה שנוצר כאן, ולא מורץ לפני הבדיקה.
+- **כלים:** gcloud, Atlas CLI ו-gh לא היו מותקנים, ו-winget נתקע על התקנה שדורשת הרשאות מנהל. לכן `install-tools.ps1` מוריד גרסאות portable ל-`%LOCALAPPDATA%\rewind-tools` (בלי מנהל), והסקריפטים מוסיפים אותן ל-PATH לבד. את הדגלים בדקנו מול `--help` של gcloud 594 ו-atlascli 1.59.
+- **באגים שה-DryRun תפס לפני שנגענו בענן:**
+  - `gc` הוא alias של `Get-Content` ב-PowerShell, ולכן פונקציה בשם `Gc` לא נקראה בכלל. שינינו ל-`GcRun`.
+  - PowerShell 5.1 הופך כל שורה ש-gcloud כותב ל-stderr לשגיאה עוצרת תחת `Stop`. עברנו לבדיקת exit code.
+  - PowerShell 5.1 מוריד מרכאות פנימיות מארגומנטים לפקודות חיצוניות.
+- **הסבר בהגנה:** "אפשר להריץ את הסקריפט שוב בבטחה: כל משאב נבדק קודם, ו-JWT_SECRET לא נוצר מחדש."
