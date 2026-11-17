@@ -34,3 +34,6 @@ docker compose -f docker-compose.dev.yml up -d --build  # בונה מקומית
 | [docs/TEST_REPORT.md](docs/TEST_REPORT.md) | מה נבדק, איך, ומה לא |
 | [docs/USER_TODO.md](docs/USER_TODO.md) | מה נשאר לעשות לפני ההגשה |
 | [docs/diagrams/diagrams.md](docs/diagrams/diagrams.md) | Use Case, ארכיטקטורה, Sequence, ERD, מכונת מצבים |
+
+## בענן (מטלה 4)
+אותן תמונות רצות ב-Google Cloud Run מאחורי Load Balancer עם HTTPS. איך מפעילים: ראשית `docs/USER_TODO.md`. איך זה עובד: `docs/CLOUD_GUIDE.md`. הסקריפטים ב-`deploy/` (PowerShell). סיכום: `docs/A4_SUMMARY.md`.

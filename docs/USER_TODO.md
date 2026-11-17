@@ -1,12 +1,81 @@
 # מה נשאר לך לעשות
 
+## ⚡ מטלה 4 (ענן): מה צריך ממך עכשיו, לפי הסדר
+
+כל הקוד, הסקריפטים והמסמכים מוכנים ונבדקו מקומית. **שום דבר עוד לא נוצר בענן**, כי בסשן הזה אף אחד מהחשבונות לא היה מחובר, ופרטי הפרויקט (מזהה GCP, דומיין, שמות) היו ריקים. כל השלבים כאן ב-**PowerShell**, מתוך תיקיית הפרויקט.
+
+**0. כלים (כבר מותקנים במחשב הזה).** בטרמינל חדש: `. .\deploy\tools-path.ps1`, או לפתוח טרמינל חדש אחרי ההתקנה של winget.
+
+**1. למלא את `deploy\config.ps1`** (בלי סודות; הקובץ נכנס ל-Git):
+   - `$GCP_PROJECT_ID`: ה-**ID** של הפרויקט ב-Google Cloud (לא השם).
+   - `$DOMAIN`: ה-hostname מ-No-IP (למשל `rewind-naama.ddns.net`). ב-No-IP: חשבון חינמי ← Create Hostname ← בינתיים כל IP.
+   - `$MEMBERS`: השמות המלאים באנגלית.
+   - אופציונלי: `$DOCKERHUB_USER` (כדי לדחוף את 1.1.0 גם ל-Docker Hub), `$ALERT_EMAIL`.
+
+**2. התחברויות (בדפדפן, פעם אחת):**
+```powershell
+gcloud auth login
+gcloud config set project <GCP_PROJECT_ID>
+atlas auth login        # אם אין, ראו "Atlas בלי CLI" למטה
+docker login            # רק אם מילאת $DOCKERHUB_USER
+gh auth login           # רשות: כדי שה-merge יעבור דרך Pull Requests
+```
+
+**3. להריץ את הפריסה:**
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\deploy.ps1
+```
+הסקריפט אידמפוטנטי: אם הוא נעצר באמצע, מתקנים ומריצים שוב. הוא ידפיס בגדול את ה-IP הסטטי.
+
+**4. >>> ב-No-IP: לעדכן את ה-hostname לרשומת A אחת בלבד עם ה-IP שהודפס <<<**
+(ה-IP נשמר גם ב-`deploy\last-ip.txt`.)
+
+**5. לחכות לתעודה** (עד 60 דקות אחרי שה-DNS מצביע נכון):
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\status.ps1 -Wait
+```
+`FAILED_NOT_VISIBLE` = רשומת ה-A לא מצביעה על ה-IP. בודקים ב-No-IP שיש **רק** רשומה אחת, עם ה-IP הנכון, ו-Google ינסה שוב לבד.
+
+**6. אימות מלא:**
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\verify.ps1
+```
+התוצאות נכתבות ל-`docs\A4_VERIFY_RESULTS.md`. (בזמן שהתעודה עוד ב-PROVISIONING, לאבחון בלבד: `verify.ps1 -ViaIp`.)
+
+**7. קובץ ההגשה:**
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\make-submission.ps1
+```
+← מגישים **רק** את `submission\rewind.json`.
+
+**8. אחר כך:**
+- **לאשר את ה-hostname ב-No-IP כל 30 יום.** לשים תזכורת ביומן, אחרת האתר נופל.
+- לבדוק את האתר מהטלפון ומהמחשב של השותפה, עם מצלמה אמיתית.
+- **לא לשדרג את חשבון ה-Free Trial (Upgrade).**
+- אחרי שהציון התקבל: `deploy\teardown.ps1 -Yes` (אחרת זה כ-40–50$ לחודש מהקרדיט).
+
+### Atlas בלי CLI (אם `atlas auth login` לא מתאים)
+1. https://cloud.mongodb.com ← New Project `rewind` ← Create cluster: **M0 (Free)**, Provider **Google Cloud**, Region **Belgium (europe-west1)**, שם `rewind`.
+2. Database Access ← Add user `rewind-app`, Password: Autogenerate (32+ תווים), Role: **readWrite** על DB `rewind` בלבד (Specific Privileges).
+3. Network Access ← Add IP Address ← `0.0.0.0/0` (ל-Cloud Run אין IP קבוע; ראו DECISIONS D-062).
+4. Connect ← Drivers ← להעתיק את ה-URI, להחליף `<db_password>`, ולהוסיף `/rewind` לפני ה-`?`.
+5. לשמור את ה-URI **בקובץ** `deploy\.secrets\mongodb_uri.txt`. התיקייה ב-.gitignore. **לא להדביק בצ'אט.**
+6. `deploy\deploy.ps1`: הסקריפט יוצר מהקובץ את הסוד ב-Secret Manager **ומוחק את הקובץ**.
+
+### מה נבדק בלי ענן, ומה עוד לא
+ראו `docs\A4_TEST_REPORT.md`: הקוד המוכן לענן, אותה תמונה בשני מצבים, ה-DryRun של הסקריפטים, וה-E2E של מטלה 3 מול compose ומול תיקייה ריקה, כולם ירוקים. **כל בדיקות הענן עצמן (דומיין, תעודה, 2 מופעים, uptime) עוד לא רצו.**
+
+---
+
+# מטלה 3
+
 כל השאר כבר בנוי ונבדק (ראו `docs/TEST_REPORT.md`). נשארו רק דברים שצריכים את הפרטים או את החשבונות שלכן.
 הפקודות כתובות ל-**Git Bash** (ב-Windows) או לטרמינל ב-Mac/Linux, מתוך תיקיית הפרויקט `rewind/`.
 
 ## 1. להעלות את התמונות ל-Docker Hub (חובה, בלי זה הבודק לא יכול להריץ)
 ```bash
 docker login                                   # עם המשתמש של Docker Hub
-DOCKERHUB_USER=<שם-המשתמש-שלך> ./scripts/build_and_push.sh
+DOCKERHUB_USER=<שם-המשתמש-שלך> ./scripts/build_and_push.sh   # tag 1.1.0 (אותו קוד שרץ בענן)
 ```
 הסקריפט מעתיק את המודל לתוך תיקיית הלקוח, בונה את שתי התמונות ל-`linux/amd64`, דוחף אותן, **ומחליף את `TODO_USER` בשם שלך בתוך `docker-compose.yml`**.
 אחר כך יש להיכנס ל-https://hub.docker.com, לפתוח את `rewind-backend` ואת `rewind-frontend` ולוודא שהן **Public** (Settings ← Visibility).
