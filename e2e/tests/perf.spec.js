@@ -12,7 +12,7 @@ for (const delegate of ["CPU", "GPU"]) {
     await page.getByLabel("קישור לסרטון YouTube").fill(YT_URL);
     await page.getByRole("button", { name: "הוספה לספרייה" }).click();
     await page.getByRole("link", { name: "פתיחה" }).first().click();
-    await page.goto(`${page.url()}?delegate=${delegate}`);
+    await page.goto(`${page.url()}${delegate === "GPU" ? "?gpu=1" : ""}`);
     await page.getByRole("button", { name: /התחלת סשן/ }).click();
     await page.getByRole("button", { name: /הפעלת מצלמה/ }).click();
     const card = page.locator("section.score-card");
@@ -23,7 +23,7 @@ for (const delegate of ["CPU", "GPU"]) {
     const ms = await card.getAttribute("data-detect-ms");
     let firstScoreAt = null;
     try {
-      await expect(page.getByTestId("score-value")).toBeVisible({ timeout: 40_000 });
+      await expect(page.locator('[data-testid="score-value"][data-provisional="false"]')).toBeVisible({ timeout: 40_000 });
       firstScoreAt = ((Date.now() - t0) / 1000 + 0).toFixed(1);
     } catch {
       /* report below */

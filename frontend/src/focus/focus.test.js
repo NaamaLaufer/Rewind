@@ -8,7 +8,7 @@ import { formatDebt, mmss } from "../utils/format.js";
 
 describe("ema", () => {
   it("passes the first value through", () => expect(ema(null, 0.8)).toBe(0.8));
-  it("averages with alpha 0.5", () => expect(ema(0.8, 0.2)).toBeCloseTo(0.5));
+  it("averages with the default alpha 0.6", () => expect(ema(0.8, 0.2)).toBeCloseTo(0.44));
   it("supports custom alpha", () => expect(ema(1, 0, 0.25)).toBeCloseTo(0.75));
 });
 

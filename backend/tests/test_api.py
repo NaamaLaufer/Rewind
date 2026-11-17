@@ -386,3 +386,39 @@ async def test_ssrf_blocked_through_api(client):
     r = await client.post("/api/content", headers=h,
                           json={"title": "x", "type": "web", "source": "http://169.254.169.254/latest"})
     assert r.status_code == 422 and isinstance(r.json()["detail"], str)
+
+
+async def test_no_face_gap_creates_debt(client):
+    h = await login_headers(client)
+    c = await make_youtube(client, h)
+    s = (await client.post("/api/sessions", headers=h, json={"content_id": c["id"]})).json()
+    for pos in (12, 14, 16):
+        await client.post(f"/api/sessions/{s['id']}/readings", headers=h,
+                          json={"position": pos, "score": 0.8, "smoothed": 0.8, "low": False, "threshold": 0.57})
+    r = await client.post(f"/api/sessions/{s['id']}/no-face", headers=h, json={"start": 20, "end": 31.5})
+    assert r.status_code == 201
+    bad = await client.post(f"/api/sessions/{s['id']}/no-face", headers=h, json={"start": 9, "end": 3})
+    assert bad.status_code == 422 and "אחרי" in bad.json()["detail"]
+    end = (await client.post(f"/api/sessions/{s['id']}/end", headers=h)).json()
+    assert [(x["start"], x["end"]) for x in end["missed_segments"]] == [(20.0, 31.5)]
+    assert end["debt_seconds"] == 11.5
+    detail = (await client.get(f"/api/sessions/{s['id']}", headers=h)).json()
+    assert detail["no_face_gaps"] == [{"start": 20.0, "end": 31.5}]
+    assert detail["readings"][0]["low"] is False and detail["readings"][0]["threshold"] == 0.57
+    late = await client.post(f"/api/sessions/{s['id']}/no-face", headers=h, json={"start": 40, "end": 50})
+    assert late.status_code == 409
+    hb = await login_headers(client, "other@example.com")
+    assert (await client.post(f"/api/sessions/{s['id']}/no-face", headers=hb,
+                              json={"start": 1, "end": 2})).status_code == 404
+
+
+async def test_low_flag_reading_creates_debt_above_040(client):
+    h = await login_headers(client)
+    c = await make_youtube(client, h)
+    s = (await client.post("/api/sessions", headers=h, json={"content_id": c["id"]})).json()
+    for pos, low in ((20, False), (22, True), (24, True), (26, False)):
+        await client.post(f"/api/sessions/{s['id']}/readings", headers=h,
+                          json={"position": pos, "score": 0.55, "smoothed": 0.55, "low": low,
+                                "looking_away": low})
+    end = (await client.post(f"/api/sessions/{s['id']}/end", headers=h)).json()
+    assert [(x["start"], x["end"]) for x in end["missed_segments"]] == [(12.0, 24.0)]

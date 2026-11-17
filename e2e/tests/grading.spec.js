@@ -52,8 +52,18 @@ test("full flow: register, login, content, session with camera, history, isolati
   await expect(page.getByText("הווידאו לא יוצא מהמחשב שלך")).toBeVisible();
   await page.getByRole("button", { name: /הפעלת מצלמה/ }).click();
   await expect(page.getByText("רק את רואה את זה")).toBeVisible();
-  const score = page.getByTestId("score-value");
+  // fast start (D-050): faces confirmed right away, then a provisional score from 30 frames
+  const t0 = Date.now();
+  await expect(page.getByTestId("face-ok")).toBeVisible({ timeout: 15_000 });
+  const provisional = page.locator('[data-testid="score-value"][data-provisional="true"]');
+  await expect(provisional).toBeVisible({ timeout: 20_000 });
+  console.log(`provisional score ${await provisional.textContent()} after ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+  await expect(page.getByTestId("score-label")).toHaveText("ציון ראשוני, מתעדכן");
+  // ...then the real score from the full 100-frame window
+  const score = page.locator('[data-testid="score-value"][data-provisional="false"]');
   await expect(score).toBeVisible({ timeout: 45_000 });
+  console.log(`full score after ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+  await expect(page.getByTestId("score-label")).not.toHaveText("ציון ראשוני, מתעדכן");
   const first = Number(await score.textContent());
   expect(first).toBeGreaterThanOrEqual(0);
   expect(first).toBeLessThanOrEqual(1);

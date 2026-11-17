@@ -9,7 +9,7 @@ COPY . .
 # public/models/v4_7.onnx must already be in the build context (scripts/prepare_assets.sh copies it).
 RUN test -f public/models/v4_7.onnx || (echo "missing public/models/v4_7.onnx - run scripts/prepare_assets.sh" && exit 1)
 # Copy MediaPipe + onnxruntime wasm into public/ and download face_landmarker.task (build time only).
-RUN node scripts/fetch-assets.mjs && test -f public/mediapipe/face_landmarker.task
+RUN node scripts/fetch-assets.mjs && test -f public/mediapipe/face_landmarker.task && test -f public/mediapipe/blaze_face_short_range.tflite
 RUN npm run build
 
 # ---- stage 2: serve with nginx (also reverse-proxies /api to the backend) ----

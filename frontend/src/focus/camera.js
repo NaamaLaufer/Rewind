@@ -8,6 +8,13 @@ export async function listCameras() {
     .map((d, i) => ({ deviceId: d.deviceId, label: d.label || `מצלמה ${i + 1}` }));
 }
 
+// Every stream this page opened, so leaving a session can be checked: no camera track may stay live
+// (the stress E2E test reads window.__liveCameraTracks()). Only a count is exposed.
+const opened = new Set();
+export const liveCameraTracks = () =>
+  [...opened].reduce((n, s) => n + s.getTracks().filter((t) => t.readyState === "live").length, 0);
+if (typeof window !== "undefined") window.__liveCameraTracks = liveCameraTracks;
+
 const base = { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 15 } };
 
 export async function openCamera(deviceId) {
@@ -16,22 +23,25 @@ export async function openCamera(deviceId) {
     e.name = "NotSupportedError";
     throw e;
   }
+  let stream;
   try {
-    return await navigator.mediaDevices.getUserMedia({
+    stream = await navigator.mediaDevices.getUserMedia({
       video: deviceId ? { ...base, deviceId: { exact: deviceId } } : base,
       audio: false,
     });
   } catch (e) {
     // The chosen device disappeared or can't satisfy constraints -> any camera.
-    if (deviceId && (e.name === "OverconstrainedError" || e.name === "NotFoundError")) {
-      return navigator.mediaDevices.getUserMedia({ video: base, audio: false });
-    }
-    throw e;
+    if (!(deviceId && (e.name === "OverconstrainedError" || e.name === "NotFoundError"))) throw e;
+    stream = await navigator.mediaDevices.getUserMedia({ video: base, audio: false });
   }
+  opened.add(stream);
+  return stream;
 }
 
 export function stopStream(stream) {
-  stream?.getTracks().forEach((t) => t.stop());
+  if (!stream) return;
+  stream.getTracks().forEach((t) => t.stop());
+  opened.delete(stream);
 }
 
 /** Hebrew explanation for getUserMedia errors. */

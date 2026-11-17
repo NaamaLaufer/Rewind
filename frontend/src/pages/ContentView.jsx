@@ -4,6 +4,7 @@ import { api } from "../api/client.js";
 import AlertBanner from "../components/AlertBanner.jsx";
 import BreakDialog from "../components/BreakDialog.jsx";
 import ConsentPanel from "../components/ConsentPanel.jsx";
+import DebugPanel from "../components/DebugPanel.jsx";
 import DebtMeter from "../components/DebtMeter.jsx";
 import FocusTape from "../components/FocusTape.jsx";
 import QuestionDialog from "../components/QuestionDialog.jsx";
@@ -12,9 +13,14 @@ import ScoreCard from "../components/ScoreCard.jsx";
 import Spinner from "../components/Spinner.jsx";
 import YouTubePlayer from "../components/YouTubePlayer.jsx";
 import { cameraErrorMessage, openCamera, stopStream } from "../focus/camera.js";
-import { computeMissedSegments, totalDebt } from "../focus/liveDebt.js";
-import { initialAlertState, returnPoint, stepAlert } from "../focus/smoothing.js";
-import { useFocusEngine } from "../focus/useFocusEngine.js";
+import { debugEnabled } from "../focus/config.js";
+import { GAZE_MESSAGES } from "../focus/gaze.js";
+import { computeMissedSegments, initialNoFace, stepNoFace, totalDebt } from "../focus/liveDebt.js";
+import {
+  calibrationLeft, initialAlertState, initialCalibration, isLowReading, returnPoint, stepAlert,
+  stepCalibration, thresholdsFor,
+} from "../focus/smoothing.js";
+import { preloadFocusEngine, useFocusEngine } from "../focus/useFocusEngine.js";
 import { formatDebt, formatScore, formatSegment, TYPE_LABELS } from "../utils/format.js";
 import NotFound from "./NotFound.jsx";
 
@@ -40,12 +46,24 @@ export default function ContentView() {
   const [cam, setCam] = useState({ status: "off", error: null }); // off|consent|starting|on|skipped
   const [camRefresh, setCamRefresh] = useState(0);
   const streamRef = useRef(null);
-  const videoRef = useRef(null);
+  const [camStream, setCamStream] = useState(null); // the live camera stream (handed to the engine)
+  const videoRef = useRef(null); // the ONE <video> that shows the camera; the engine attaches the stream
+  const mountedRef = useRef(true);
 
   const [readings, setReadings] = useState([]);
   const [noFaceMarks, setNoFaceMarks] = useState([]);
-  const [alert, setAlert] = useState(null); // {returnTo}
+  const [alert, setAlert] = useState(null); // {returnTo, reason}
   const alertState = useRef(initialAlertState());
+  // Personal calibration (D-045): baseline from the first 30 s of raw scores
+  const calRef = useRef(initialCalibration());
+  const [cal, setCal] = useState(initialCalibration());
+  const lastSmoothed = useRef(null);
+  const gazeStartPos = useRef(null);
+  // No face > 5 s = missed time (D-047)
+  const noFaceRef = useRef(initialNoFace());
+  const [gaps, setGaps] = useState([]);
+  const [liveGap, setLiveGap] = useState(null);
+  const [noFaceFor, setNoFaceFor] = useState(0);
   const [breakOpen, setBreakOpen] = useState(false);
   const [question, setQuestion] = useState(null); // paragraph index
   const [measureStopped, setMeasureStopped] = useState(null);
@@ -107,14 +125,20 @@ export default function ContentView() {
   const stopCamera = useCallback(() => {
     stopStream(streamRef.current);
     streamRef.current = null;
-    if (videoRef.current) videoRef.current.srcObject = null;
+    setCamStream(null);
   }, []);
 
   const enableCamera = async (deviceId) => {
     setCam({ status: "starting", error: null });
+    stopCamera(); // never two streams at once (e.g. "retry" after an error)
     try {
       const stream = await openCamera(deviceId);
+      if (!mountedRef.current) {
+        stopStream(stream); // the user left the page while the browser was asking for permission
+        return;
+      }
       streamRef.current = stream;
+      setCamStream(stream);
       setCam({ status: "on", error: null });
       setCamRefresh((k) => k + 1); // labels are only available after permission
       if (!isReview) playerRef.current?.play(); // measuring started -> start the video too
@@ -122,13 +146,6 @@ export default function ContentView() {
       setCam({ status: "consent", error: cameraErrorMessage(e) });
     }
   };
-
-  useEffect(() => {
-    if (cam.status === "on" && videoRef.current && streamRef.current) {
-      videoRef.current.srcObject = streamRef.current;
-      videoRef.current.play().catch(() => {});
-    }
-  }, [cam.status]);
 
   // ---------- measurement ----------
   const postReading = useCallback(async (sid, body) => {
@@ -151,23 +168,95 @@ export default function ContentView() {
   const onScore = useCallback((r) => {
     const s = sessionRef.current;
     if (!s) return;
+    const now = Date.now();
+    // calibration: raw scores, skipping the ones taken while looking away / eyes closed
+    calRef.current = stepCalibration(calRef.current, r.score, now, !!r.gaze?.episode);
+    setCal(calRef.current);
+    const th = thresholdsFor(calRef.current.baseline);
+    const lookingAway = !!r.gaze?.sustained;
     const reading = {
       position: getPosition(),
       score: Math.round(r.score * 10000) / 10000,
       smoothed: Math.round(r.smoothed * 10000) / 10000,
       level: r.level,
       attention_peak: r.attentionPeak === null ? null : Math.round(r.attentionPeak * 1000) / 1000,
+      low: isLowReading(r.smoothed, th, lookingAway), // the server builds the debt from this flag
+      threshold: th.low,
+      looking_away: lookingAway,
     };
+    lastSmoothed.current = reading.smoothed;
     const all = [...readingsRef.current, reading];
     setReadings(all);
     postReading(s.id, reading);
 
-    const step = stepAlert(alertState.current, reading.smoothed, Date.now());
+    const step = stepAlert(alertState.current, reading.smoothed, now, { thresholds: th, forceLow: lookingAway });
     alertState.current = step.state;
-    if (step.fireAlert) setAlert({ returnTo: returnPoint(all, s.debt_unit_hint) });
+    if (step.fireAlert) {
+      setAlert({
+        returnTo: returnPoint(all, s.debt_unit_hint, th.recover),
+        reason: lookingAway ? GAZE_MESSAGES[r.gaze.reason] ?? null : null,
+      });
+    }
   }, [getPosition, postReading]);
 
-  const engine = useFocusEngine({ videoRef, enabled: phase === "active" && cam.status === "on", onScore });
+  const engine = useFocusEngine({ videoRef, stream: phase === "active" && cam.status === "on" ? camStream : null, onScore });
+
+  // Looking away / eyes closed for more than 4 s (D-046): enter "low focus" immediately,
+  // without waiting for the model score. Return point = where the look-away began, minus 5 s.
+  useEffect(() => {
+    if (engine.gaze.episode && gazeStartPos.current === null) gazeStartPos.current = getPosition();
+    if (!engine.gaze.episode) gazeStartPos.current = null;
+  }, [engine.gaze.episode, getPosition]);
+
+  useEffect(() => {
+    if (!engine.gaze.sustained || !sessionRef.current) return;
+    const th = thresholdsFor(calRef.current.baseline);
+    const step = stepAlert(alertState.current, lastSmoothed.current, Date.now(), { thresholds: th, forceLow: true });
+    alertState.current = step.state;
+    if (step.fireAlert) {
+      const from = gazeStartPos.current ?? getPosition();
+      const returnTo = unit === "paragraphs" ? Math.max(0, Math.floor(from)) : Math.max(0, from - 5);
+      setAlert({ returnTo, reason: GAZE_MESSAGES[engine.gaze.reason] ?? null });
+    }
+  }, [engine.gaze.sustained, engine.gaze.reason, getPosition, unit]);
+
+  // No face for more than 5 continuous seconds -> missed time (watch sessions only). The yellow
+  // "no face" message stays the only notice: no extra alert popup.
+  const postGap = useCallback((sid, gap, keepalive = false) => {
+    setGaps((g) => [...g, gap]);
+    return api(`/sessions/${sid}/no-face`, { method: "POST", body: gap, keepalive }).catch(() => {});
+  }, []);
+  const noFaceLive = useRef(engine.noFace);
+  noFaceLive.current = engine.noFace;
+  useEffect(() => {
+    if (phase !== "active" || cam.status !== "on" || session?.mode !== "watch") return undefined;
+    const t = setInterval(() => {
+      const s = sessionRef.current;
+      if (!s || document.hidden) return;
+      const now = Date.now();
+      const r = stepNoFace(noFaceRef.current, noFaceLive.current, now, getPosition());
+      noFaceRef.current = r.state;
+      setLiveGap((prev) => (prev?.start === r.live?.start && prev?.end === r.live?.end ? prev : r.live));
+      setNoFaceFor(r.state.since === null ? 0 : Math.round((now - r.state.since) / 1000));
+      if (r.gap) postGap(s.id, r.gap);
+    }, 500);
+    return () => clearInterval(t);
+  }, [phase, cam.status, session, getPosition, postGap]);
+
+  /** Flush an ongoing no-face gap (end of session / leaving the page). */
+  const flushNoFace = useCallback((keepalive = false) => {
+    const s = sessionRef.current;
+    const r = stepNoFace(noFaceRef.current, false, Date.now(), getPosition());
+    noFaceRef.current = r.state;
+    setLiveGap(null);
+    if (s && r.gap && s.mode === "watch") return postGap(s.id, r.gap, keepalive);
+    return Promise.resolve();
+  }, [getPosition, postGap]);
+
+  // Warm up MediaPipe + the model as soon as a session starts (the user is reading the consent card).
+  useEffect(() => {
+    if (phase === "active") preloadFocusEngine();
+  }, [phase]);
 
   // Gray "no face" marks on the tape, one every 2s while no face is detected.
   useEffect(() => {
@@ -192,6 +281,13 @@ export default function ContentView() {
     setNoFaceMarks([]);
     setAlert(null);
     alertState.current = initialAlertState();
+    calRef.current = initialCalibration();
+    setCal(calRef.current);
+    lastSmoothed.current = null;
+    noFaceRef.current = initialNoFace();
+    setGaps([]);
+    setLiveGap(null);
+    setNoFaceFor(0);
     setMeasureStopped(null);
     setSummary(null);
     setSegIdx(0);
@@ -210,7 +306,11 @@ export default function ContentView() {
       setSession({ ...s, debt_unit_hint: unit });
       setPhase("active");
       setCam((c) => (c.status === "on" ? c : { status: "consent", error: null }));
-      if (params.get("review")) setParams({}, { replace: true });
+      if (params.get("review")) {
+        const rest = new URLSearchParams(params);
+        rest.delete("review");
+        setParams(rest, { replace: true });
+      }
     } catch (e) {
       setActionError(e.message);
     } finally {
@@ -224,6 +324,7 @@ export default function ContentView() {
     setBusy(true);
     setActionError(null);
     playerRef.current?.pause();
+    await flushNoFace(); // an ongoing no-face gap > 5 s must reach the server before /end
     stopCamera();
     setCam({ status: "off", error: null });
     try {
@@ -238,19 +339,26 @@ export default function ContentView() {
     } finally {
       setBusy(false);
     }
-  }, [stopCamera, loadDebt]);
+  }, [stopCamera, loadDebt, flushNoFace]);
 
   // Leaving the page mid-session: best-effort /end with keepalive + stop the camera.
+  const flushRef = useRef(flushNoFace);
+  flushRef.current = flushNoFace;
   useEffect(() => {
     const onUnload = () => {
       const s = sessionRef.current;
-      if (s) api(`/sessions/${s.id}/end`, { method: "POST", keepalive: true }).catch(() => {});
+      if (!s) return;
+      flushRef.current(true); // the gap request is sent first, then /end
+      api(`/sessions/${s.id}/end`, { method: "POST", keepalive: true }).catch(() => {});
     };
+    mountedRef.current = true;
     window.addEventListener("beforeunload", onUnload);
     return () => {
+      mountedRef.current = false;
       window.removeEventListener("beforeunload", onUnload);
       onUnload();
       stopStream(streamRef.current);
+      streamRef.current = null;
     };
   }, []);
 
@@ -299,8 +407,8 @@ export default function ContentView() {
 
   // ---------- derived ----------
   const liveSegments = useMemo(
-    () => (session?.mode === "watch" ? computeMissedSegments(readings, unit) : []),
-    [readings, unit, session],
+    () => (session?.mode === "watch" ? computeMissedSegments(readings, unit, liveGap ? [...gaps, liveGap] : gaps) : []),
+    [readings, unit, session, gaps, liveGap],
   );
   const liveDebt = totalDebt(liveSegments, unit);
   const openDebtSegs = (debt?.open_segments ?? []).map((s) => ({ start: s.start, end: s.end, closed: false }));
@@ -334,6 +442,9 @@ export default function ContentView() {
   if (phase === "summary" && summary) tapeSegments = summary.mode === "watch" ? summary.missed_segments : reviewSegs;
 
   const contentLength = isVideo ? duration : content?.body_paragraphs?.length;
+  const calTh = thresholdsFor(cal.baseline);
+  const calView = cal.startedAt === null ? null
+    : { baseline: cal.baseline, threshold: calTh.low, recover: calTh.recover, left: calibrationLeft(cal, Date.now()) };
 
   // ---------- render ----------
   if (notFound) return <NotFound message="הפריט לא קיים או שאין לך גישה אליו." />;
@@ -375,7 +486,7 @@ export default function ContentView() {
             <div className="msg msg-info" role="status">
               <strong>מעבר שני: קטע {Math.min(segIdx + 1, reviewSegs.length)} מתוך {reviewSegs.length}</strong>
               {currentSeg && <> · {formatSegment(currentSeg, unit)}</>}
-              {!reviewRunning && " · מחכה לציון הראשון מהמצלמה לפני שמתחילים (כ-10 שניות)"}
+              {!reviewRunning && " · מחכה לציון הראשון מהמצלמה לפני שמתחילים (כמה שניות)"}
             </div>
           )}
           {isVideo ? (
@@ -440,7 +551,7 @@ export default function ContentView() {
           {phase === "active" && (
             <>
               {alert && (
-                <AlertBanner unit={unit} returnTo={alert.returnTo} aiEnabled={aiEnabled}
+                <AlertBanner unit={unit} returnTo={alert.returnTo} reason={alert.reason} aiEnabled={aiEnabled}
                   onReturn={() => { seek(alert.returnTo); setAlert(null); }}
                   onBreak={() => { playerRef.current?.pause(); setBreakOpen(true); setAlert(null); }}
                   onQuestion={() => { setQuestion(Math.floor(alert.returnTo)); setAlert(null); }}
@@ -470,11 +581,18 @@ export default function ContentView() {
                       ⚠️ לא זוהו פנים. ודאי שהפנים שלך מול המצלמה ובתאורה טובה.
                     </div>
                   )}
+                  {engine.blank && !engine.noFace && (
+                    <div className="msg msg-warning" role="alert" data-testid="camera-blank">
+                      המצלמה שולחת תמונה שחורה. ודאי שהמצלמה לא מכוסה ושאף תוכנה אחרת לא משתמשת בה, או בחרי מצלמה אחרת.
+                    </div>
+                  )}
                   {engine.paused && <div className="msg msg-info" role="status">המדידה מושהית כשהלשונית לא פעילה.</div>}
                   {engine.status === "loading" && <div className="msg msg-info" role="status">טוענת את מודל הריכוז (פעם ראשונה עשויה לקחת כמה שניות)...</div>}
                   {engine.status === "error" && <div className="msg msg-error" role="alert">{engine.error}</div>}
+                  {engine.detectError && <div className="msg msg-error" role="alert" data-testid="detect-error">{engine.detectError}</div>}
                   <ScoreCard score={engine.score} smoothed={engine.smoothed} modelLevel={engine.level}
-                    framesFilled={engine.framesFilled} noFace={engine.noFace} fps={engine.fps} detectMs={engine.detectMs} />
+                    framesFilled={engine.framesFilled} noFace={engine.noFace} fps={engine.fps} detectMs={engine.detectMs}
+                    calibration={calView} faceSeen={engine.faceSeen} provisional={engine.provisional} />
                 </>
               )}
               <div className={cam.status === "on" ? "card" : "cam-hidden"} style={cam.status === "on" ? { padding: 12 } : undefined}>
@@ -498,6 +616,9 @@ export default function ContentView() {
               ) : (
                 <DebtMeter value={liveDebt} unit={unit} />
               )}
+
+              {debugEnabled() && <DebugPanel engine={engine} cam={cam} stream={camStream}
+                calibration={calView} noFaceFor={noFaceFor} />}
 
               <button type="button" className="btn btn-danger btn-lg btn-block" style={{ marginTop: 16 }} disabled={busy} onClick={endSession}>
                 ⏹ {busy ? "שומרת..." : isReview ? "סיום מעבר שני" : "סיום סשן"}

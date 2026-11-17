@@ -29,7 +29,7 @@ for (const vp of [{ name: "desktop", width: 1366, height: 900 }, { name: "mobile
     await page.getByRole("button", { name: /התחלת סשן/ }).click();
     await shot("05-consent");
     await page.getByRole("button", { name: /הפעלת מצלמה/ }).click();
-    await expect(page.getByTestId("score-value")).toBeVisible({ timeout: 45_000 });
+    await expect(page.locator('[data-testid="score-value"][data-provisional="false"]')).toBeVisible({ timeout: 45_000 });
     await page.waitForTimeout(6000);
     await shot("06-measuring");
     await page.getByRole("button", { name: /סיום סשן/ }).click();

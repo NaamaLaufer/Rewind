@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pymongo import ReturnDocument
 
 from ..db import get_db
-from ..schemas import (ReadingIn, ReadingOut, SessionDetailOut, SessionEndOut,
+from ..schemas import (NoFaceGapIn, ReadingIn, ReadingOut, SessionDetailOut, SessionEndOut,
                        SessionIn, SessionOut, SessionSummary)
 from ..security import CurrentUser, get_current_user
 from ..services import segments as seg
@@ -19,6 +19,7 @@ router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 MODEL_VERSION = "v4_7"
 STALE_AFTER = timedelta(hours=2)  # open session with no reading for 2h is closed lazily
+MAX_NO_FACE_GAPS = 2000           # keeps the session document bounded
 
 
 def _avg(s: dict) -> float | None:
@@ -83,7 +84,7 @@ async def finalize(s: dict, ended_at: datetime | None = None) -> dict:
                 {"$set": {"missed_segments": new_segs, "debt_seconds": remaining}})
             upd.update(segments_closed=closed, segments_total=open_before, debt_remaining=remaining)
     else:
-        segments = seg.compute_missed_segments(readings, unit)
+        segments = seg.compute_missed_segments(readings, unit, s.get("no_face_gaps", []))
         upd["missed_segments"] = segments
         upd["debt_seconds"] = seg.total_debt(segments, unit)
 
@@ -128,6 +129,7 @@ async def create_session(body: SessionIn, user: CurrentUser = Depends(get_curren
         "review_of": None,
         "review_segments": [],
         "watched_idx": [],
+        "no_face_gaps": [],
         "missed_segments": [],
         "debt_seconds": 0.0,
         "debt_unit": unit,
@@ -170,7 +172,8 @@ async def add_reading(session_id: str, body: ReadingIn,
         "session_id": s["_id"], "owner_id": user.id,
         "position": body.position, "score": body.score,
         "smoothed": body.smoothed, "level": body.level,
-        "attention_peak": body.attention_peak, "created_at": now,
+        "attention_peak": body.attention_peak, "low": body.low,
+        "threshold": body.threshold, "looking_away": body.looking_away, "created_at": now,
     }
     res = await db.readings.insert_one(doc)
     upd = await db.sessions.update_one(
@@ -180,6 +183,22 @@ async def add_reading(session_id: str, body: ReadingIn,
         await db.readings.delete_one({"_id": res.inserted_id})
         raise HTTPException(status_code=409, detail="הסשן כבר הסתיים")
     return ReadingOut(position=body.position, score=body.score, created_at=now)
+
+
+@router.post("/{session_id}/no-face", status_code=status.HTTP_201_CREATED)
+async def add_no_face_gap(session_id: str, body: NoFaceGapIn,
+                          user: CurrentUser = Depends(get_current_user)):
+    """No face for more than 5 continuous seconds = missed content time (D-047).
+    Stored on the session and turned into a missed segment at /end (watch sessions only)."""
+    s = await _own_session(session_id, user)
+    if s.get("ended_at"):
+        raise HTTPException(status_code=409, detail="הסשן כבר הסתיים")
+    gap = {"start": body.start, "end": body.end}
+    await get_db().sessions.update_one(
+        {"_id": s["_id"], "ended_at": None},
+        {"$push": {"no_face_gaps": {"$each": [gap], "$slice": -MAX_NO_FACE_GAPS}},
+         "$set": {"last_reading_at": datetime.now(timezone.utc)}})
+    return gap
 
 
 @router.post("/{session_id}/end", response_model=SessionEndOut)
@@ -215,7 +234,9 @@ async def get_session(session_id: str, user: CurrentUser = Depends(get_current_u
     d = end_dict(s)
     d["content_exists"] = bool(await db.content.find_one(
         {"_id": s["content_id"], "owner_id": user.id}, {"_id": 1}))
+    d["no_face_gaps"] = s.get("no_face_gaps", [])
     d["readings"] = [{k: r.get(k) for k in
-                      ("position", "score", "smoothed", "level", "attention_peak", "created_at")}
+                      ("position", "score", "smoothed", "level", "attention_peak",
+                       "low", "threshold", "looking_away", "created_at")}
                      for r in readings]
     return d
