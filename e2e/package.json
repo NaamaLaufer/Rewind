@@ -8,6 +8,7 @@
   },
   "devDependencies": {
     "@playwright/test": "1.65.0",
+    "mermaid": "^11.17.2",
     "onnxruntime-node": "1.31.1"
   }
 }
