@@ -20,7 +20,9 @@ function Add-Result([string]$n, [string]$topic, [bool]$ok, [string]$detail, [swi
 }
 
 $ip = GcOut compute addresses describe rewind-ip --global --format="value(address)"
-$curlBase = @("-s", "--max-time", "20")
+# --ssl-no-revoke: Windows curl (Schannel) otherwise fails when the CRL server is unreachable.
+# The certificate chain and host name are still verified (no -k).
+$curlBase = @("-s", "--max-time", "20", "--ssl-no-revoke")
 if ($ViaIp) {
     $curlBase += @("--resolve", "${DOMAIN}:443:$ip", "--resolve", "${DOMAIN}:80:$ip", "-k")
     Warn "-ViaIp: TLS is NOT verified (diagnostics while the certificate is provisioning)"
@@ -68,7 +70,7 @@ Step "+ Isolation: direct *.run.app URLs are blocked from outside"
 foreach ($svc in @("rewind-backend", "rewind-frontend")) {
     $url = GcOut run services describe $svc --region=$REGION --format="value(status.url)"
     if (-not $url) { Add-Result "+" "$svc direct URL" $false "service not found"; continue }
-    $c = & curl.exe -s -o NUL -w "%{http_code}" --max-time 20 "$url/health"
+    $c = & curl.exe -s --ssl-no-revoke -o NUL -w "%{http_code}" --max-time 20 "$url/health"
     Add-Result "+" "$svc direct URL" ($c -in @("403", "404")) "$url -> $c (expected 403/404: ingress = internal-and-cloud-load-balancing)"
 }
 

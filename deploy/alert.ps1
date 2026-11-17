@@ -8,12 +8,21 @@ param([switch]$DryRun)
 $script:IsDryRun = [bool]$DryRun
 if (-not $ALERT_EMAIL) { Info "no ALERT_EMAIL in config.ps1: no e-mail alert"; return }
 
-$existing = GcOut beta monitoring channels list --filter="displayName=rewind-email" --format="value(name)"
-if ($existing) { $channel = ($existing -split "`n")[0]; Ok "notification channel exists" }
+# Notification channel through the Monitoring REST API (the GA gcloud has no "channels" command,
+# and the portable gcloud cannot install the beta component). Same login: gcloud's access token.
+$api = "https://monitoring.googleapis.com/v3/projects/$GCP_PROJECT_ID/notificationChannels"
+$headers = @{ Authorization = "Bearer $(GcOut auth print-access-token)" }
+$channel = $null
+if (-not $script:IsDryRun) {
+    $list = Invoke-RestMethod -Uri "$api`?filter=displayName%3D%22rewind-email%22" -Headers $headers -ErrorAction Stop
+    $channel = @($list.notificationChannels | Select-Object -ExpandProperty name -ErrorAction SilentlyContinue)[0]
+}
+if ($channel) { Ok "notification channel exists" }
+elseif ($script:IsDryRun) { Info "[dry-run] would create an e-mail notification channel for $ALERT_EMAIL" }
 else {
-    GcRun beta monitoring channels create --display-name=rewind-email --type=email --channel-labels="email_address=$ALERT_EMAIL"
-    $channel = (GcOut beta monitoring channels list --filter="displayName=rewind-email" --format="value(name)" -split "`n")[0]
-    Ok "notification channel created"
+    $body = @{ type = "email"; displayName = "rewind-email"; labels = @{ email_address = $ALERT_EMAIL } } | ConvertTo-Json
+    $channel = (Invoke-RestMethod -Method Post -Uri $api -Headers $headers -ContentType "application/json" -Body $body -ErrorAction Stop).name
+    Ok "notification channel created (e-mail)"
 }
 
 $policies = GcOut monitoring policies list --filter="displayName=rewind-health-down" --format="value(name)"
