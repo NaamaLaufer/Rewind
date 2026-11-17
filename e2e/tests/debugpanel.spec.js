@@ -18,7 +18,7 @@ test("debug panel with a face: faces/sec > 0, confidence, resolution, camera lab
   const text = await panel.innerText();
   console.log("---- panel (face) ----\n" + text);
   expect(text).toMatch(/פנים שזוהו בשנייה\s+([1-9]\d*) מתוך/);
-  expect(text).toMatch(/ביטחון זיהוי \(FaceDetector\)\s+הכי גבוה: 0\.[5-9]\d · פנים מעל 0\.5: 1/);
+  expect(text).toMatch(/ביטחון זיהוי \(FaceDetector\)\s+הכי גבוה: 0\.[6-9]\d · פנים מעל 0\.6: 1/);
   expect(text).toMatch(/רזולוציית וידאו\s+\d+×\d+/);
   expect(text).toMatch(/delegate \/ input\s+CPU \/ video/);
   await panel.screenshot({ path: "test-results/debug-panel-face.png" });

@@ -12,6 +12,6 @@ test("debug panel without a face: 0 faces/sec, detector finds nothing, canvas in
   expect(text).toMatch(/פנים שזוהו בשנייה\s+0 מתוך [1-9]/);
   expect(text).toMatch(/delegate \/ input\s+CPU \/ canvas/);
   expect(text).toMatch(/שגיאה אחרונה\s+אין/);
-  expect(text).toMatch(/פנים מעל 0\.5: 0/);
+  expect(text).toMatch(/פנים מעל 0\.6: 0/);
   expect(text).not.toContain("הגלאי (FaceDetector) רואה פנים");
 });

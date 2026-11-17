@@ -3,7 +3,7 @@ import { formatScore, scoreColor } from "../utils/format.js";
 import { LEVEL_LABELS, levelFromScore } from "../utils/levels.js";
 
 /** The main, most prominent element: the latest raw score as a big number + label + color bar. */
-export default function ScoreCard({ score, smoothed, modelLevel, framesFilled, noFace, fps, detectMs }) {
+export default function ScoreCard({ score, smoothed, modelLevel, framesFilled, noFace, fps, detectMs, calibration }) {
   const waiting = score === null || score === undefined;
   // Estimate with the real measured frame rate (slow machines fill the window more slowly).
   const rate = fps && fps > 0.5 ? Math.min(10, fps) : 10;
@@ -44,6 +44,16 @@ export default function ScoreCard({ score, smoothed, modelLevel, framesFilled, n
               <span className="muted"> · סיווג המודל: {LEVEL_LABELS[modelLevel]}</span>
             )}
           </p>
+          {calibration && (
+            <p className="small calibration-line" data-testid="calibration" style={{ margin: "6px 0 0" }}>
+              {calibration.baseline !== null ? (
+                <>כיול אישי: הרמה הרגילה שלך <strong>{formatScore(calibration.baseline)}</strong>
+                  <span className="muted"> · התראה מתחת ל-{formatScore(calibration.threshold)}</span></>
+              ) : (
+                <span className="muted">כיול אישי: לומדת את הרמה הרגילה שלך{calibration.left > 0 ? ` (עוד כ-${calibration.left} שניות)` : "..."}</span>
+              )}
+            </p>
+          )}
         </div>
       )}
     </section>

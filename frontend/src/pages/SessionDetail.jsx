@@ -38,6 +38,9 @@ export default function SessionDetail() {
     smoothed: r.smoothed,
   }));
   const openSegs = s.missed_segments.filter((x) => !x.closed);
+  // personal threshold after calibration = the last threshold the client used (D-045); legacy: 0.40
+  const personalTh = [...s.readings].reverse().find((r) => r.threshold != null)?.threshold ?? 0.4;
+  const awayCount = s.readings.filter((r) => r.looking_away).length;
 
   // "What the model saw": where inside each 10-second window the most influential frame was.
   const bins = Array.from({ length: 10 }, (_, b) => ({ label: `${b}–${b + 1} שנ׳`, count: 0 }));
@@ -88,8 +91,13 @@ export default function SessionDetail() {
         ) : (
           <>
             <p className="small muted">
-              ציון גולמי (מהמודל) וציון מוחלק (EMA) לאורך הסשן. ציר הזמן מתחיל בתחילת הסשן. מתחת לקו המקווקו (0.4) נחשב קשב נמוך.
+              ציון גולמי (מהמודל) וציון מוחלק (EMA) לאורך הסשן. ציר הזמן מתחיל בתחילת הסשן. מתחת לקו המקווקו ({formatScore(personalTh)}) נחשב קשב נמוך
+              {personalTh > 0.4 ? " (סף אישי לפי הכיול שלך)" : ""}.
             </p>
+            {awayCount > 0 && <p className="small">👀 במדידות {awayCount} זוהה מבט הצידה או עיניים עצומות יותר מ-4 שניות.</p>}
+            {(s.no_face_gaps ?? []).length > 0 && (
+              <p className="small">🚫 לא זוהו פנים יותר מ-5 שניות ב-{s.no_face_gaps.length} פעמים. הזמן הזה נכנס לחוב הקשב.</p>
+            )}
             <div className="chart-box" style={{ height: 300 }}>
               <ResponsiveContainer>
                 <LineChart data={chart} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
@@ -99,7 +107,7 @@ export default function SessionDetail() {
                   <Tooltip formatter={(v, n) => [formatScore(v), n === "score" ? "ציון" : "מוחלק"]}
                     labelFormatter={(l, p) => `${l} בסשן · ${p?.[0]?.payload?.pos ?? ""} בתוכן`} />
                   <Legend formatter={(v) => (v === "score" ? "ציון גולמי" : "ציון מוחלק")} />
-                  <ReferenceLine y={0.4} stroke="#e0584b" strokeDasharray="4 4" />
+                  <ReferenceLine y={personalTh} stroke="#e0584b" strokeDasharray="4 4" />
                   <Line type="monotone" dataKey="score" stroke="#9aa3b5" strokeWidth={1.5} dot={false} />
                   <Line type="monotone" dataKey="smoothed" stroke="#1d2b44" strokeWidth={2.5} dot={false} />
                 </LineChart>

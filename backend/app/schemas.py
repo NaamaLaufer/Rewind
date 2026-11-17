@@ -3,7 +3,7 @@ import re
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 # ---------- auth / users ----------
 
@@ -170,6 +170,22 @@ class ReadingIn(BaseModel):
     smoothed: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
     level: int | None = Field(default=None, ge=0, le=4)
     attention_peak: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    # The client's low-focus decision (personal threshold or a sustained look-away), D-045/D-046
+    low: bool | None = None
+    threshold: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    looking_away: bool | None = None
+
+
+class NoFaceGapIn(BaseModel):
+    """Content range (seconds or paragraph position) during which no face was visible for > 5 s."""
+    start: float = Field(ge=0, le=10_000_000, allow_inf_nan=False)
+    end: float = Field(ge=0, le=10_000_000, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _ordered(self):
+        if self.end < self.start:
+            raise ValueError("סוף הקטע חייב להיות אחרי ההתחלה")
+        return self
 
 
 class ReadingOut(BaseModel):
@@ -184,6 +200,9 @@ class ReadingDetail(BaseModel):
     smoothed: float | None = None
     level: int | None = None
     attention_peak: float | None = None
+    low: bool | None = None
+    threshold: float | None = None
+    looking_away: bool | None = None
     created_at: datetime
 
 
@@ -220,6 +239,7 @@ class SessionEndOut(SessionSummary):
 
 class SessionDetailOut(SessionEndOut):
     content_exists: bool = True
+    no_face_gaps: list[NoFaceGapIn] = []
     readings: list[ReadingDetail] = []
 
 

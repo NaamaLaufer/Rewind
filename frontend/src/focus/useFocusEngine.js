@@ -9,9 +9,12 @@
 //   (module-level owner token: a loop that is no longer the owner stops itself);
 // - strictly increasing timestamps for detectForVideo (shared by every caller of the singleton);
 // - an exception from detectForVideo is an ERROR (logged + shown), never counted as "no face".
+// Head pose / eyes (D-046): every face frame also feeds gaze.js. The first 100 face frames define
+// the user's neutral pose; after that, looking away or eyes closed for > 4 s sets gaze.sustained.
 import { useEffect, useRef, useState } from "react";
 import { debugEnabled, FPS, INFER_EVERY_MS, inputMode, LANDMARKS, NO_FACE_MIN, NO_FACE_TICKS, WINDOW } from "./config.js";
 import { getFaceDetector } from "./faceDetector.js";
+import { classifyPose, headPose, initialGazeState, NEUTRAL_FRAMES, neutralPose, stepGaze } from "./gaze.js";
 import { getLandmarker, landmarkerDelegate } from "./landmarker.js";
 import { loadModel, runModel } from "./model.js";
 import { unrollRing } from "./modelMath.js";
@@ -43,6 +46,7 @@ const initial = {
   attentionPeak: null,
   fps: null,
   detectMs: null,
+  gaze: { calibrated: false, episode: false, sustained: false, reason: null },
   debug: null, // only filled with ?debug=1
 };
 
@@ -75,6 +79,23 @@ export function useFocusEngine({ videoRef, enabled, onScore }) {
     let busy = false;
     let smoothed = null;
     let errorShown = false;
+    // head pose / eyes
+    const poseSamples = [];
+    let neutral = null;
+    let gazeState = initialGazeState();
+    let lastPose = null;
+    let lastCls = null;
+    const gazeView = () => ({ calibrated: !!neutral, episode: gazeState.since !== null,
+      sustained: gazeState.sustained, reason: gazeState.reason });
+    let gazeKey = "";
+    const publishGaze = () => {
+      const g = gazeView();
+      const key = `${g.calibrated}|${g.episode}|${g.sustained}|${g.reason}`;
+      if (key !== gazeKey) {
+        gazeKey = key;
+        patch({ gaze: g });
+      }
+    };
 
     // ---- ?debug=1 diagnostics (see DebugPanel) ----
     const debugOn = debugEnabled();
@@ -157,6 +178,18 @@ export function useFocusEngine({ videoRef, enabled, onScore }) {
         if (hasFace) dbg.faceStamps.push(t1);
         while (dbg.faceStamps.length && t1 - dbg.faceStamps[0] > 1000) dbg.faceStamps.shift();
       }
+      if (hasFace) {
+        const pose = headPose(face, video.videoWidth / video.videoHeight);
+        lastPose = pose;
+        if (!neutral && pose) {
+          poseSamples.push(pose);
+          if (poseSamples.length >= NEUTRAL_FRAMES) neutral = neutralPose(poseSamples);
+        }
+        lastCls = classifyPose(pose, neutral);
+        gazeState = stepGaze(gazeState, lastCls, t1);
+      } else {
+        lastCls = null;
+      }
       history.push(hasFace);
       if (history.length > NO_FACE_TICKS) history.shift();
 
@@ -181,7 +214,9 @@ export function useFocusEngine({ videoRef, enabled, onScore }) {
       if (nowNoFace !== noFace) {
         noFace = nowNoFace;
         patch({ noFace });
+        if (noFace) gazeState = initialGazeState(); // no face is handled separately (D-047)
       }
+      publishGaze();
     }
 
     const diag = () => ({
@@ -200,7 +235,7 @@ export function useFocusEngine({ videoRef, enabled, onScore }) {
         if (!alive()) return;
         smoothed = ema(smoothed, r.score);
         patch({ score: r.score, smoothed, level: r.level, attentionPeak: r.attentionPeak, ...diag() });
-        onScoreRef.current?.({ ...r, smoothed });
+        onScoreRef.current?.({ ...r, smoothed, gaze: gazeView() });
       } catch (e) {
         console.error("inference failed", e);
         noteError("ONNX model", e);
@@ -229,7 +264,7 @@ export function useFocusEngine({ videoRef, enabled, onScore }) {
           try {
             const det = detector.detect(video).detections ?? [];
             const scores = det.map((d) => d.categories?.[0]?.score ?? 0);
-            dbg.detectorFaces = scores.filter((x) => x >= 0.5).length; // weak candidates are not "faces"
+            dbg.detectorFaces = scores.filter((x) => x >= 0.6).length; // weak candidates are not "faces" (the no-face test pattern reaches 0.53)
             dbg.detectorScore = scores.length ? Math.max(...scores) : 0; // best candidate, even if weak
           } catch (e) {
             noteError("FaceDetector", e);
@@ -254,6 +289,15 @@ export function useFocusEngine({ videoRef, enabled, onScore }) {
           detectMs: detectMsAvg === null ? null : Math.round(detectMsAvg),
           lastError: dbg.lastError,
           lastErrorAt: dbg.lastErrorAt,
+          yaw: lastPose ? Math.round(lastPose.yaw) : null,
+          pitch: lastPose ? Math.round(lastPose.pitch) : null,
+          ear: lastPose?.ear != null ? Math.round(lastPose.ear * 100) / 100 : null,
+          neutral: neutral ? { yaw: Math.round(neutral.yaw), pitch: Math.round(neutral.pitch),
+            ear: neutral.ear != null ? Math.round(neutral.ear * 100) / 100 : null } : null,
+          neutralProgress: Math.min(poseSamples.length, NEUTRAL_FRAMES),
+          lookingAway: !!lastCls?.away,
+          eyesClosed: !!lastCls?.closed,
+          gazeFor: gazeState.since !== null ? Math.round((now - gazeState.since) / 100) / 10 : 0,
         },
       });
     }

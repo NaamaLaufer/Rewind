@@ -1,7 +1,9 @@
 """Attention-debt logic: pure functions, fully unit-tested.
 
-A "missed segment" is a run of consecutive readings whose smoothed score is below
-THRESHOLD. For video (seconds) the segment extends 10s before the first low reading
+A "missed segment" is a run of consecutive LOW readings. A reading is low when the client
+flagged it (`low`: personal calibrated threshold or a sustained look-away, DECISIONS D-045);
+older readings without the flag fall back to smoothed < THRESHOLD. No-face gaps longer than
+5 seconds (`no_face_gaps`, sent by the client) are missed time too (D-047). For video (seconds) the segment extends 10s before the first low reading
 (the model window looks ~10s back) and nearby segments merge. For text the unit is a
 paragraph index and a paragraph is "in debt" when its average smoothed score is low.
 
@@ -21,25 +23,35 @@ def _sm(reading: dict) -> float:
     return v if v is not None else reading.get("score", 0.0)
 
 
-def compute_missed_segments(readings: list[dict], unit: str = "seconds") -> list[dict]:
+def is_low(reading: dict) -> bool:
+    """The client's decision when present, else the fixed 0.40 rule."""
+    flag = reading.get("low")
+    if flag is not None:
+        return bool(flag)
+    return _sm(reading) < THRESHOLD
+
+
+def compute_missed_segments(readings: list[dict], unit: str = "seconds",
+                            no_face_gaps: list[dict] | None = None) -> list[dict]:
     """Return missed segments as [{start, end, closed, closed_by}]."""
+    gaps = no_face_gaps or []
     if unit == "paragraphs":
-        return _missed_paragraphs(readings)
-    return _missed_seconds(readings)
+        return _missed_paragraphs(readings, gaps)
+    return _missed_seconds(readings, gaps)
 
 
 MAX_STEP = 15.0  # a position jump bigger than this (or backwards) = the user seeked
 
 
-def _missed_seconds(readings: list[dict]) -> list[dict]:
+def _missed_seconds(readings: list[dict], gaps: list[dict] = ()) -> list[dict]:
     """`readings` must be in chronological (created_at) order."""
     runs: list[list[float]] = []
     cur: list[float] | None = None
     prev_pos: float | None = None
     for r in readings:
-        pos, sm = float(r["position"]), _sm(r)
+        pos = float(r["position"])
         seeked = prev_pos is not None and (pos < prev_pos - 1 or pos > prev_pos + MAX_STEP)
-        if sm < THRESHOLD:
+        if is_low(r):
             if cur is not None and seeked:
                 runs.append(cur)
                 cur = None
@@ -55,7 +67,10 @@ def _missed_seconds(readings: list[dict]) -> list[dict]:
         runs.append(cur)
 
     # Extend 10s back (the model window) and clamp at 0.
-    raw = sorted([max(0.0, first - WINDOW_BACK), last] for first, last in runs)
+    raw = [[max(0.0, first - WINDOW_BACK), last] for first, last in runs]
+    # No-face gaps are already exact content ranges: no window extension.
+    raw += [[max(0.0, float(g["start"])), float(g["end"])] for g in gaps]
+    raw.sort()
     return [_seg(round(a, 3), round(b, 3)) for a, b in merge_intervals(raw) if b > a]
 
 
@@ -86,12 +101,21 @@ def unit_for(content_type: str) -> str:
     return "paragraphs" if content_type in ("text", "web") else "seconds"
 
 
-def _missed_paragraphs(readings: list[dict]) -> list[dict]:
-    buckets: dict[int, list[float]] = defaultdict(list)
-    for r in readings:
-        buckets[int(r["position"])].append(_sm(r))
+def _paragraph_in_debt(rs: list[dict]) -> bool:
+    if any(r.get("low") is not None for r in rs):
+        return sum(is_low(r) for r in rs) * 2 >= len(rs)  # at least half of its readings low
+    return sum(_sm(r) for r in rs) / len(rs) < THRESHOLD   # legacy rule: low average
 
-    debt = sorted(i for i, vals in buckets.items() if sum(vals) / len(vals) < THRESHOLD)
+
+def _missed_paragraphs(readings: list[dict], gaps: list[dict] = ()) -> list[dict]:
+    buckets: dict[int, list[dict]] = defaultdict(list)
+    for r in readings:
+        buckets[int(r["position"])].append(r)
+
+    debt_set = {i for i, rs in buckets.items() if _paragraph_in_debt(rs)}
+    for g in gaps:  # every paragraph the reader was on while no face was visible
+        debt_set.update(range(int(g["start"]), int(g["end"]) + 1))
+    debt = sorted(debt_set)
 
     segs: list[list[int]] = []
     for idx in debt:
@@ -121,6 +145,12 @@ def total_debt(segments: list[dict], unit: str = "seconds", only_open: bool = Tr
     return round(total, 3)
 
 
+def _focused_enough(rs: list[dict]) -> bool:
+    if any(r.get("low") is not None for r in rs):
+        return sum(not is_low(r) for r in rs) * 2 >= len(rs)
+    return sum(_sm(r) for r in rs) / len(rs) >= CLOSE_THRESHOLD
+
+
 def close_segments(
     segments: list[dict],
     review_readings: list[dict],
@@ -130,8 +160,10 @@ def close_segments(
 ):
     """Return (updated_segments, closed_count).
 
-    A segment closes when review readings inside its range average >= CLOSE_THRESHOLD,
-    or when the client reported it watched (short segments with no readings).
+    A segment closes when review readings inside its range show focus: when the readings carry
+    the client's `low` flag, at least half of them must be NOT low (personal threshold, D-045);
+    legacy readings: average >= CLOSE_THRESHOLD. Or when the client reported it watched
+    (short segments with no readings).
     Review readings never create new segments.
     """
     watched = set(watched_idx or [])
@@ -145,16 +177,14 @@ def close_segments(
             continue
 
         if unit == "paragraphs":
-            vals = [_sm(r) for r in review_readings
-                    if s["start"] <= int(r["position"]) <= s["end"]]
+            inside = [r for r in review_readings if s["start"] <= int(r["position"]) <= s["end"]]
         else:
-            vals = [_sm(r) for r in review_readings
-                    if s["start"] <= r["position"] <= s["end"]]
+            inside = [r for r in review_readings if s["start"] <= r["position"] <= s["end"]]
 
         should_close = False
-        if vals and (sum(vals) / len(vals)) >= CLOSE_THRESHOLD:
+        if inside and _focused_enough(inside):
             should_close = True
-        elif not vals and i in watched:  # "watched" only counts when no reading fits inside
+        elif not inside and i in watched:  # "watched" only counts when no reading fits inside
             should_close = True
 
         if should_close:

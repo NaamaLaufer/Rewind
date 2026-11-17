@@ -1,5 +1,5 @@
 """Unit tests for the pure attention-debt functions."""
-from app.services.segments import (close_segments, compute_missed_segments, total_debt,
+from app.services.segments import (close_segments, compute_missed_segments, is_low, total_debt,
                                    union_debt)
 
 
@@ -88,3 +88,50 @@ def test_union_debt_counts_overlap_once():
     assert union_debt([a, b, c]) == 30.0
     p = [{"start": 1.0, "end": 3.0}, {"start": 2.0, "end": 4.0}]
     assert union_debt(p, "paragraphs") == 4
+
+
+# ---------- client "low" flag (personal threshold / look-away, D-045/D-046) ----------
+
+def rl(pos, sm, low):
+    return {"position": pos, "score": sm, "smoothed": sm, "low": low}
+
+
+def test_low_flag_overrides_fixed_threshold():
+    # 0.55 is above 0.40, but the user's personal threshold flagged it low
+    assert is_low(rl(10, 0.55, True)) and not is_low(rl(10, 0.3, False))
+    assert is_low(r(10, 0.3)) and not is_low(r(10, 0.5))  # legacy readings: fixed 0.40
+    segs = compute_missed_segments([rl(20, 0.7, False), rl(22, 0.55, True), rl(24, 0.56, True), rl(26, 0.7, False)])
+    assert [(s["start"], s["end"]) for s in segs] == [(12.0, 24.0)]
+
+
+def test_paragraph_debt_by_low_flag_majority():
+    segs = compute_missed_segments([rl(2.1, 0.6, True), rl(2.5, 0.6, True), rl(2.9, 0.7, False),
+                                    rl(3.2, 0.3, False)], "paragraphs")
+    assert [(s["start"], s["end"]) for s in segs] == [(2.0, 2.0)]
+
+
+def test_close_segments_uses_low_flag():
+    segs = [{"start": 10.0, "end": 30.0, "closed": False, "closed_by": None}]
+    # average 0.6 >= 0.5, but most readings are below the user's own threshold -> stays open
+    out, n = close_segments(segs, [rl(12, 0.6, True), rl(16, 0.6, True), rl(20, 0.62, False)])
+    assert n == 0 and not out[0]["closed"]
+    out, n = close_segments(segs, [rl(12, 0.6, False), rl(16, 0.45, True), rl(20, 0.7, False)])
+    assert n == 1 and out[0]["closed"]
+
+
+# ---------- no-face gaps (D-047) ----------
+
+def test_no_face_gap_is_a_segment_without_window_extension():
+    segs = compute_missed_segments([r(10, 0.8), r(40, 0.8)], "seconds", [{"start": 20.0, "end": 27.5}])
+    assert [(s["start"], s["end"]) for s in segs] == [(20.0, 27.5)]
+    assert total_debt(segs) == 7.5
+
+
+def test_no_face_gap_merges_with_low_run():
+    segs = compute_missed_segments([r(30, 0.2), r(32, 0.2)], "seconds", [{"start": 34.0, "end": 40.0}])
+    assert [(s["start"], s["end"]) for s in segs] == [(20.0, 40.0)]
+
+
+def test_no_face_gap_paragraphs():
+    segs = compute_missed_segments([r(0.5, 0.9)], "paragraphs", [{"start": 2.3, "end": 4.1}])
+    assert [(s["start"], s["end"]) for s in segs] == [(2.0, 4.0)]
