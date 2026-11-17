@@ -12,7 +12,7 @@ export function getFaceDetector() {
         FaceDetector.createFromOptions(fileset, {
           baseOptions: { modelAssetPath: "/mediapipe/blaze_face_short_range.tflite", delegate: "CPU" },
           runningMode: "IMAGE", // IMAGE mode: no timestamp bookkeeping, called only a few times/sec
-          minDetectionConfidence: 0.2, // low enough to show a weak face (0.2-0.5); the panel counts >= 0.6 as a face
+          minDetectionConfidence: 0.2, // low enough to show a weak face (0.2-0.5); the panel counts >= 0.75 as a face
         }),
       )
       .catch((e) => {

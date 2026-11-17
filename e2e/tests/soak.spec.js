@@ -1,11 +1,11 @@
-// D-049/D-050: 3+ minutes of continuous measurement with the face video:
+// D-050/D-051: 3+ minutes of continuous measurement with the face video:
 //   fast start (faces confirmed, provisional score ~3 s, full score ~10 s), a real tab switch and
-//   back, a simulated frozen detector (watchdog restart) and a simulated lost WebGL context (CPU
-//   restart). The measurement must never stall and must never show "no face".
+//   back, and a clean diagnostics snapshot (CPU, no errors, no re-created landmarker).
+//   The measurement must never stall and must never show "no face".
 import { expect, test } from "@playwright/test";
 import { openSessionWithCamera } from "./helpers.js";
 
-test("3 minutes of continuous measurement survives tab switches, a frozen detector and a lost GPU context", async ({ page, context }) => {
+test("3 minutes of continuous measurement survives a tab switch, with clean diagnostics", async ({ page, context }) => {
   test.setTimeout(330_000);
   const readings = [];
   page.on("request", (r) => {
@@ -70,24 +70,19 @@ test("3 minutes of continuous measurement survives tab switches, a frozen detect
   await expect(page.getByText("המדידה מושהית כשהלשונית לא פעילה")).toHaveCount(0);
   await expectReadingsResume("after tab switch");
 
-  // ---- 3) frozen detector: no results for 6 s -> watchdog restarts the landmarker ----
-  await page.evaluate(() => window.__focusDebug.stall(6000));
-  await expect.poll(() => page.evaluate(() => window.__focusDebug.stats().restarts), { timeout: 15_000 }).toBeGreaterThanOrEqual(1);
-  console.log("watchdog:", JSON.stringify(await page.evaluate(() => window.__focusDebug.stats())));
-  await expectReadingsResume("after watchdog restart");
+  // ---- 3) the diagnostics snapshot (what "העתקת אבחון" copies) is consistent ----
+  const diag = await page.evaluate(() => window.__focusDiagnostics());
+  console.log("diagnostics:", JSON.stringify({ delegate: diag.delegate, input: diag.input, initMs: diag.landmarkerInitMs,
+    timingsMs: diag.timingsMs, framesAnalyzed: diag.framesAnalyzed, facesFound: diag.facesFound, skipped: diag.skipped,
+    detectMsAvg: diag.detectMsAvg, copyMsAvg: diag.copyMsAvg, recreations: diag.recreations }));
+  expect(diag.delegate).toBe("CPU");
+  expect(diag.input).toBe("image");
+  expect(diag.recreations).toBe(0);
+  expect(diag.lastErrors).toEqual([]);
+  expect(diag.lastResults.length).toBe(20);
+  expect(diag.facesFound).toBeGreaterThan(0.95 * diag.framesAnalyzed);
 
-  // ---- 4) lost WebGL context -> landmarker recreated on CPU ----
-  const r0 = await page.evaluate(() => window.__focusDebug.stats().restarts);
-  expect(r0).toBe(1); // exactly one restart for one frozen period
-  await page.evaluate(() => window.__focusDebug.loseContext());
-  await expect.poll(() => page.evaluate(() => window.__focusDebug.stats().restarts), { timeout: 15_000 }).toBeGreaterThan(r0);
-  const st = await page.evaluate(() => window.__focusDebug.stats());
-  console.log("after context loss:", JSON.stringify(st));
-  expect(st.delegate).toBe("CPU");
-  expect(st.restarts).toBe(2);
-  await expectReadingsResume("after context loss");
-
-  // ---- 5) keep measuring until 3 minutes of measurement have passed ----
+  // ---- 4) keep measuring until 3 minutes of measurement have passed ----
   const left = 180_000 - (Date.now() - firstFullAt);
   if (left > 0) await page.waitForTimeout(left);
   await expectReadingsResume("at 3 minutes");

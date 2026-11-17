@@ -1,47 +1,45 @@
 // The measurement loop:
-//   every 100 ms (10 fps): MediaPipe on the current camera frame -> 478x3 raw landmarks -> ring buffer
+//   every 100 ms (10 fps): copy the camera frame -> MediaPipe -> 478x3 raw landmarks -> ring buffer
 //   every 2 s: if the 100-frame window is full and a face is visible -> v4_7 -> score -> onScore()
-// No face in >= 7 of the last 10 ticks -> noFace (the model does not run, nothing is sent).
+// No face in >= 7 of the last 10 analyzed frames -> noFace (the model does not run, nothing is sent).
 // When the face returns we keep filling the same window (no reset) so a score comes back quickly.
 //
-// Robustness (see DECISIONS D-042):
-// - exactly ONE detection loop at a time, even under React StrictMode's double mount
-//   (module-level owner token: a loop that is no longer the owner stops itself);
-// - strictly increasing timestamps for detectForVideo (shared by every caller of the singleton);
-// - an exception from detectForVideo is an ERROR (logged + shown), never counted as "no face".
-// Self-healing (D-049): every tick is wrapped in try/catch (the loop never dies); a paused camera
-// <video> is play()ed again and frames that are not ready are NOT counted as "no face"; coming back
-// to the tab resets the miss history and restarts the loop if needed; a lost WebGL context recreates
-// the FaceLandmarker on CPU; a watchdog restarts loop + landmarker after 3 s without a result.
+// Startup (D-051), in this exact order, all owned by ONE effect run:
+//   1. the engine attaches the camera stream to the ONE <video> element (videoRef) and waits for
+//      'loadeddata', a resolved play() and videoWidth > 0;
+//   2. in parallel it creates its OWN FaceLandmarker (never shared with another session) and loads
+//      the ONNX model;
+//   3. only when all three are ready does the 10 fps loop start.
+// Stopping (end of session, leaving the page, camera off) clears the timers, closes this
+// landmarker and detaches the stream. Nothing half-initialized survives into the next session.
+//
+// A frame is analyzed only when the camera track is live, the video plays and has a size. Frames
+// that are skipped are NOT "no face" (nothing was analyzed). Before the first face, black frames
+// (camera warming up) are skipped too. If detectForVideo throws, that FaceLandmarker is broken for
+// good (measured), so we close it and create a new one (at most 3 times per measurement).
+//
 // Fast start (D-050): first face -> faceSeen; at 30 and 60 frames a PROVISIONAL score from the
 // partial window (shown only: not sent, no alerts/debt/calibration). Only 100-frame windows count.
-// Head pose / eyes (D-046): every face frame also feeds gaze.js. The first 100 face frames define
-// the user's neutral pose; after that, looking away or eyes closed for > 4 s sets gaze.sustained.
+// Head pose / eyes (D-046): every face frame also feeds gaze.js.
 import { useEffect, useRef, useState } from "react";
 import { debugEnabled, FPS, INFER_EVERY_MS, inputMode, LANDMARKS, NO_FACE_MIN, NO_FACE_TICKS, WINDOW } from "./config.js";
 import { getFaceDetector } from "./faceDetector.js";
 import { classifyPose, headPose, initialGazeState, NEUTRAL_FRAMES, neutralPose, stepGaze } from "./gaze.js";
-import { getLandmarker, landmarkerDelegate, resetLandmarker } from "./landmarker.js";
+import { createLandmarker, loadLandmarkerAssets } from "./landmarker.js";
 import { loadModel, runModel } from "./model.js";
 import { unrollRing } from "./modelMath.js";
 import { ema } from "./smoothing.js";
 
 const FRAME = LANDMARKS * 3;
-const WATCHDOG_MS = 3000; // no detection result for this long while the camera is on -> restart
 const PROVISIONAL_AT = [30, 60]; // partial windows that give a provisional score
-const NO_FACE_RESTART_MS = 5000; // faces seen before, none for 5 s -> one tracker reset
 const STARTUP_NO_FACE_TICKS = 20; // before the first face: ~2 s of misses before warning "no face"
-
-// Shared by every loop because the FaceLandmarker itself is a shared singleton:
-// MediaPipe rejects a timestamp that is not larger than the previous one it saw.
-let lastTs = 0;
-function nextTimestamp() {
-  lastTs = Math.max(performance.now(), lastTs + 1);
-  return lastTs;
-}
-
-// Only the loop holding the current token may run; a newer loop takes over, older ones stop.
-let loopOwner = 0;
+const BLANK_LEVEL = 8; // mean brightness (0-255) below this = the camera sends a black picture
+const BLANK_WARN_FRAMES = 30; // ~3 s of black pictures before any face -> tell the user
+const MAX_RECREATE = 3; // new FaceLandmarker after a detection error, per measurement
+const LAST_RESULTS = 20; // detection results kept for the diagnostics
+// ?debug=1 FaceDetector: a candidate counts as a face from 0.75 (real faces score ~0.95; Chrome's
+// synthetic no-face camera pattern reaches 0.62 on the copied frame).
+const DETECTOR_FACE = 0.75;
 
 const initial = {
   status: "idle", // idle | loading | running | error
@@ -49,6 +47,7 @@ const initial = {
   detectError: null, // MediaPipe threw while detecting (different from "no face")
   framesFilled: 0,
   noFace: false,
+  blank: false, // the camera sends black pictures (before any face was seen)
   paused: false,
   score: null,
   smoothed: null,
@@ -58,32 +57,94 @@ const initial = {
   detectMs: null,
   faceSeen: false, // a face was detected at least once in this measurement
   provisional: false, // the shown score comes from a partial window (30/60 frames)
-  restarts: 0, // self-healing restarts of the loop/landmarker
   gaze: { calibrated: false, episode: false, sustained: false, reason: null },
   debug: null, // only filled with ?debug=1
 };
 
-/** Start downloading/initializing MediaPipe + the ONNX model early (e.g. while the consent card
- *  is shown), so the first score is not delayed by loading after the camera turns on. */
+/** Start downloading the MediaPipe runtime/model bytes and the ONNX model early (e.g. while the
+ *  consent card is shown). Only immutable assets are preloaded, never a landmarker instance. */
 export function preloadFocusEngine() {
-  getLandmarker().catch(() => {});
+  loadLandmarkerAssets().catch(() => {});
   loadModel().catch(() => {});
 }
 
-export function useFocusEngine({ videoRef, enabled, onScore }) {
+// Diagnostics of the measurement that runs now (or ran last), for the "העתקת אבחון" button.
+let currentDiagnostics = null;
+export function focusDiagnostics() {
+  const base = { generatedAt: new Date().toISOString(), userAgent: navigator.userAgent,
+    page: window.location.pathname + window.location.search };
+  return currentDiagnostics ? { ...base, ...currentDiagnostics() } : { ...base, engine: "המדידה לא הופעלה עדיין" };
+}
+if (typeof window !== "undefined") window.__focusDiagnostics = focusDiagnostics;
+
+/** Resolve on the first of `names` fired by `target`; reject with AbortError when `signal` aborts. */
+function nextEvent(target, names, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(new DOMException("stopped", "AbortError"));
+    const off = () => {
+      names.forEach((n) => target.removeEventListener(n, done));
+      signal.removeEventListener("abort", abort);
+    };
+    const done = () => {
+      off();
+      resolve();
+    };
+    const abort = () => {
+      off();
+      reject(new DOMException("stopped", "AbortError"));
+    };
+    names.forEach((n) => target.addEventListener(n, done));
+    signal.addEventListener("abort", abort);
+  });
+}
+
+/** Attach the stream to the video element and wait until it really shows frames:
+ *  'loadeddata' fired, play() resolved, and the frame size is known. */
+async function startVideo(video, stream, signal, noteError) {
+  if (video.srcObject !== stream) video.srcObject = stream;
+  while (video.readyState < 2) await nextEvent(video, ["loadeddata"], signal);
+  try {
+    await video.play();
+  } catch (e) {
+    noteError("video.play", e);
+  }
+  while (video.paused) {
+    video.play().catch(() => {});
+    await nextEvent(video, ["playing"], signal);
+  }
+  while (video.videoWidth === 0) await nextEvent(video, ["resize", "timeupdate"], signal);
+}
+
+export function useFocusEngine({ videoRef, stream, onScore }) {
   const [state, setState] = useState(initial);
   const onScoreRef = useRef(onScore);
   onScoreRef.current = onScore;
 
   useEffect(() => {
-    if (!enabled) {
+    if (!stream) {
       setState(initial);
       return undefined;
     }
-    const myToken = ++loopOwner;
+    // The ONE element that shows the camera. Captured once: this effect run owns it until cleanup.
+    const video = videoRef.current;
+    if (!video) {
+      setState({ ...initial, status: "error", error: "תצוגת המצלמה לא נמצאה בעמוד. נסי לרענן את הדף." });
+      return undefined;
+    }
     let cancelled = false;
+    const ac = new AbortController();
+    const t0 = performance.now();
+    const since = () => Math.round(performance.now() - t0);
+    const mode = inputMode();
+    const debugOn = debugEnabled();
+
+    let landmarker = null;
+    let recreating = false;
+    let recreations = 0;
     let tickTimer = null;
     let inferTimer = null;
+    let debugTimer = null;
+    let lastTs = 0; // detectForVideo needs strictly increasing timestamps
     const ring = new Float32Array(WINDOW * FRAME);
     let next = 0;
     let filled = 0;
@@ -91,21 +152,11 @@ export function useFocusEngine({ videoRef, enabled, onScore }) {
     let noFace = false;
     let busy = false;
     let smoothed = null;
-    let errorShown = false;
-    // self-healing
-    let landmarker = null;
-    let watchTimer = null;
-    let lastResultAt = performance.now();
-    let restarting = false;
-    let restarts = 0;
-    let lastRestart = null;
-    let consecutiveErrors = 0;
     let faceSeen = false;
-    let failedRestarts = 0; // restarts since the last good result (backoff)
-    let lastFaceAt = performance.now();
-    let faceRestartDone = false; // one landmarker restart per long no-face episode
     let startupMisses = 0;
-    let stallUntil = 0;
+    let blankRun = 0;
+    let blank = false;
+    let errorShown = false;
     const provisionalDone = new Set();
     // head pose / eyes
     const poseSamples = [];
@@ -116,6 +167,54 @@ export function useFocusEngine({ videoRef, enabled, onScore }) {
     const gazeView = () => ({ calibrated: !!neutral, episode: gazeState.since !== null,
       sustained: gazeState.sustained, reason: gazeState.reason });
     let gazeKey = "";
+
+    // ---- diagnostics (always collected, cheap; shown/copied with ?debug=1) ----
+    const diag = {
+      delegate: null,
+      landmarkerInitMs: null,
+      timingsMs: { videoReady: null, landmarkerReady: null, modelReady: null, loopStarted: null, firstFrame: null, firstFace: null },
+      framesAnalyzed: 0,
+      facesFound: 0,
+      skipped: { hidden: 0, trackNotLive: 0, videoPaused: 0, videoNotReady: 0, blankBeforeFace: 0 },
+      detectMsAvg: null,
+      copyMsAvg: null,
+      lastBrightness: null,
+      last: [],
+      errors: [],
+    };
+    const noteError = (where, e) => {
+      diag.errors.push({ atMs: since(), error: `${where}: ${String(e?.message ?? e).slice(0, 200)}` });
+      if (diag.errors.length > 10) diag.errors.shift();
+    };
+    const avg = (prev, x) => (prev === null ? x : 0.9 * prev + 0.1 * x);
+    const round1 = (x) => (x === null ? null : Math.round(x * 10) / 10);
+    currentDiagnostics = () => {
+      const track = stream.getVideoTracks()[0];
+      const st = track?.getSettings?.() ?? {};
+      return {
+        camera: track ? { label: track.label, readyState: track.readyState, muted: track.muted, enabled: track.enabled,
+          width: st.width ?? null, height: st.height ?? null, frameRate: st.frameRate ?? null } : null,
+        delegate: diag.delegate,
+        input: mode,
+        landmarkerInitMs: diag.landmarkerInitMs,
+        timingsMs: diag.timingsMs, // from the moment the camera stream was handed to the engine
+        video: { readyState: video.readyState, paused: video.paused, ended: video.ended, videoWidth: video.videoWidth,
+          videoHeight: video.videoHeight, streamAttached: video.srcObject === stream, inDocument: video.isConnected },
+        engine: { stopped: cancelled, loopRunning: !!tickTimer, landmarkerReady: !!landmarker, framesFilled: filled,
+          faceSeen, noFace, blank },
+        framesAnalyzed: diag.framesAnalyzed,
+        facesFound: diag.facesFound,
+        skipped: diag.skipped,
+        detectMsAvg: round1(diag.detectMsAvg),
+        copyMsAvg: round1(diag.copyMsAvg),
+        lastBrightness: diag.lastBrightness,
+        lastResults: diag.last,
+        recreations,
+        lastErrors: diag.errors,
+      };
+    };
+
+    const patch = (p) => !cancelled && setState((s) => ({ ...s, ...p }));
     const publishGaze = () => {
       const g = gazeView();
       const key = `${g.calibrated}|${g.episode}|${g.sustained}|${g.reason}`;
@@ -124,38 +223,33 @@ export function useFocusEngine({ videoRef, enabled, onScore }) {
         patch({ gaze: g });
       }
     };
+    const stamps = []; // analyzed frames in the last ~2 s (fps diagnostics)
 
-    // ---- ?debug=1 diagnostics (see DebugPanel) ----
-    const debugOn = debugEnabled();
-    const mode = inputMode();
-    const dbg = { faceStamps: [], landmarkFaces: 0, detectorScore: null, detectorFaces: null,
-      brightness: null, lastError: null, lastErrorAt: null, ticks: 0 };
-    const noteError = (where, e) => {
-      dbg.lastError = `${where}: ${String(e?.message ?? e).slice(0, 160)}`;
-      dbg.lastErrorAt = new Date().toLocaleTimeString("he-IL");
-    };
-    let detector = null;
-    let debugTimer = null;
-    const frameCanvas = mode === "canvas" ? document.createElement("canvas") : null;
-    const small = debugOn ? document.createElement("canvas") : null;
-    if (small) {
-      small.width = 32;
-      small.height = 24;
+    // ---- the frame MediaPipe gets: an ImageData copy (default) or the <video> element ----
+    const copyCanvas = document.createElement("canvas");
+    let copyCtx = null;
+    let lastInput = null;
+    function grabFrame() {
+      if (mode === "video") return { input: video, brightness: null };
+      const w = video.videoWidth;
+      const h = video.videoHeight;
+      if (!copyCtx || copyCanvas.width !== w || copyCanvas.height !== h) {
+        copyCanvas.width = w;
+        copyCanvas.height = h;
+        copyCtx = copyCanvas.getContext("2d", { willReadFrequently: true });
+      }
+      copyCtx.drawImage(video, 0, 0, w, h);
+      const img = copyCtx.getImageData(0, 0, w, h);
+      // mean brightness from a sample of the pixels (every 101st pixel is plenty)
+      const px = img.data;
+      let sum = 0;
+      let n = 0;
+      for (let i = 0; i < px.length; i += 4 * 101) {
+        sum += 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+        n += 1;
+      }
+      return { input: img, brightness: Math.round(sum / n) };
     }
-    if (debugOn) getFaceDetector().then((d) => (detector = d)).catch((e) => noteError("FaceDetector load", e));
-
-    const alive = () => !cancelled && loopOwner === myToken;
-    const patch = (p) => alive() && setState((s) => ({ ...s, ...p }));
-    const stop = () => {
-      clearInterval(tickTimer);
-      clearInterval(inferTimer);
-      clearInterval(debugTimer);
-      clearInterval(watchTimer);
-      tickTimer = inferTimer = debugTimer = watchTimer = null;
-    };
-    // Diagnostics: real frames/second and ms per detection over the last ~2 seconds.
-    const stamps = [];
-    let detectMsAvg = null;
 
     // The loop never dies: any exception inside a tick is logged and the next tick runs normally.
     function safeTick() {
@@ -168,67 +262,72 @@ export function useFocusEngine({ videoRef, enabled, onScore }) {
     }
 
     function tick() {
-      if (!alive()) return stop();
-      const video = videoRef.current;
-      // Not ready / hidden: skip WITHOUT counting the frame as "no face" (nothing was analyzed).
-      if (document.hidden || !landmarker || !video) return;
-      if (stallUntil && performance.now() < stallUntil) return; // ?debug=1 test hook: frozen detector
+      if (cancelled || !landmarker) return;
+      // Skipped frames are NOT "no face": nothing was analyzed.
+      if (document.hidden) return void diag.skipped.hidden++;
+      const track = stream.getVideoTracks()[0];
+      // A stopped track keeps readyState 4 and gives black frames with NO error (measured).
+      if (!track || track.readyState !== "live") return void diag.skipped.trackNotLive++;
       if (video.paused || video.ended) {
-        // A paused preview would feed MediaPipe the same frozen frame: start it again instead.
-        video.play().catch((e) => noteError("video.play", e));
+        diag.skipped.videoPaused++;
+        video.play().catch((e) => noteError("video.play", e)); // a paused preview = a frozen frame
         return;
       }
-      if (video.readyState < 2 || video.videoWidth === 0) return;
-      let result;
-      const t0 = performance.now();
-      try {
-        let input = video;
-        if (frameCanvas) {
-          // ?input=canvas: hand MediaPipe a plain 2D-canvas copy of the frame
-          if (frameCanvas.width !== video.videoWidth || frameCanvas.height !== video.videoHeight) {
-            frameCanvas.width = video.videoWidth;
-            frameCanvas.height = video.videoHeight;
-          }
-          frameCanvas.getContext("2d").drawImage(video, 0, 0);
-          input = frameCanvas;
+      // An unready frame would break the FaceLandmarker for good (measured): never send one.
+      if (video.readyState < 2 || video.videoWidth === 0) return void diag.skipped.videoNotReady++;
+
+      const tA = performance.now();
+      const frame = grabFrame();
+      const tB = performance.now();
+      if (diag.timingsMs.firstFrame === null) diag.timingsMs.firstFrame = since();
+      diag.lastBrightness = frame.brightness;
+      if (mode === "image") diag.copyMsAvg = avg(diag.copyMsAvg, tB - tA);
+      // Camera still warming up: a black picture before any face is not "no face".
+      if (!faceSeen && frame.brightness !== null && frame.brightness < BLANK_LEVEL) {
+        diag.skipped.blankBeforeFace++;
+        blankRun += 1;
+        if (blankRun >= BLANK_WARN_FRAMES && !blank) {
+          blank = true;
+          patch({ blank: true });
         }
-        result = landmarker.detectForVideo(input, nextTimestamp());
+        return;
+      }
+      blankRun = 0;
+      if (blank) {
+        blank = false;
+        patch({ blank: false });
+      }
+
+      let result;
+      try {
+        lastTs = Math.max(performance.now(), lastTs + 1);
+        result = landmarker.detectForVideo(frame.input, lastTs);
       } catch (e) {
-        // NOT "no face": the detector failed. Log it and show a separate error.
+        // NOT "no face": the detector failed, and this instance will keep failing. Replace it.
         console.error("FaceLandmarker.detectForVideo failed", e);
         noteError("detectForVideo", e);
-        consecutiveErrors += 1;
-        if (consecutiveErrors >= 10) restart("10 detection errors in a row"); // ~1 s of failures
-        if (!errorShown) {
-          errorShown = true;
-          patch({ detectError: "זיהוי הפנים נכשל בדפדפן הזה. נסי לרענן את הדף או לבחור מצלמה אחרת." });
-        }
+        recreate();
         return;
       }
-      consecutiveErrors = 0;
+      lastInput = frame.input;
       if (errorShown) {
         errorShown = false;
         patch({ detectError: null });
       }
       const t1 = performance.now();
-      lastResultAt = t1; // the watchdog only cares that MediaPipe keeps answering
-      failedRestarts = 0;
-      detectMsAvg = detectMsAvg === null ? t1 - t0 : 0.9 * detectMsAvg + 0.1 * (t1 - t0);
+      diag.framesAnalyzed += 1;
+      diag.detectMsAvg = avg(diag.detectMsAvg, t1 - tB);
       stamps.push(t1);
       while (stamps.length && t1 - stamps[0] > 2000) stamps.shift();
 
       const faces = result?.faceLandmarks ?? [];
-      const face = faces.length > 0 ? faces[0] : null; // faceLandmarks.length > 0 = a face was found
+      const face = faces.length > 0 ? faces[0] : null;
       const hasFace = !!face && face.length >= LANDMARKS;
-      if (debugOn) {
-        dbg.ticks += 1;
-        dbg.landmarkFaces = faces.length;
-        if (hasFace) dbg.faceStamps.push(t1);
-        while (dbg.faceStamps.length && t1 - dbg.faceStamps[0] > 1000) dbg.faceStamps.shift();
-      }
+      diag.last.push({ atMs: since(), face: hasFace, ms: Math.round(t1 - tB) });
+      if (diag.last.length > LAST_RESULTS) diag.last.shift();
       if (hasFace) {
-        lastFaceAt = t1;
-        faceRestartDone = false;
+        diag.facesFound += 1;
+        if (diag.timingsMs.firstFace === null) diag.timingsMs.firstFace = since();
       }
       if (hasFace && !faceSeen) {
         faceSeen = true;
@@ -270,9 +369,8 @@ export function useFocusEngine({ videoRef, enabled, onScore }) {
         }
       }
       // noFace = MANY misses (>= 7 of the last 10 analyzed frames). A face sets it back to false.
+      // Before the first face: ~2 s of misses (MediaPipe needs a few frames to lock on).
       const misses = history.filter((h) => h === false).length;
-      // While starting (no face seen yet) wait ~2 s of misses before warning: MediaPipe often
-      // needs a few frames to lock on, and a flash of "no face" at the start is wrong.
       startupMisses = faceSeen ? 0 : startupMisses + (hasFace ? 0 : 1);
       const nowNoFace = faceSeen ? misses >= NO_FACE_MIN : startupMisses >= STARTUP_NO_FACE_TICKS;
       if (nowNoFace !== noFace) {
@@ -283,22 +381,56 @@ export function useFocusEngine({ videoRef, enabled, onScore }) {
       publishGaze();
     }
 
-    const diag = () => ({
+    // A FaceLandmarker whose detectForVideo threw keeps throwing on every later frame (measured),
+    // so the only fix is a new instance. Bounded: after MAX_RECREATE we show an error instead.
+    async function recreate() {
+      if (recreating || cancelled) return;
+      const old = landmarker;
+      landmarker = null; // ticks skip until the new one is ready
+      try {
+        old?.close();
+      } catch {
+        /* already broken */
+      }
+      if (recreations >= MAX_RECREATE) {
+        patch({ status: "error", error: "זיהוי הפנים נכשל שוב ושוב בדפדפן הזה. נסי לרענן את הדף או לבחור מצלמה אחרת." });
+        return;
+      }
+      recreating = true;
+      recreations += 1;
+      if (!errorShown) {
+        errorShown = true;
+        patch({ detectError: "זיהוי הפנים נתקל בשגיאה, מאתחלת אותו מחדש..." });
+      }
+      try {
+        const c = await createLandmarker();
+        if (cancelled) return c.landmarker.close();
+        landmarker = c.landmarker;
+      } catch (e) {
+        console.error("FaceLandmarker re-create failed", e);
+        noteError("recreate", e);
+        patch({ status: "error", error: "לא הצלחנו לאתחל מחדש את זיהוי הפנים. נסי לרענן את הדף." });
+      } finally {
+        recreating = false;
+      }
+    }
+
+    const fpsDiag = () => ({
       fps: Math.round((stamps.length / 2) * 10) / 10,
-      detectMs: detectMsAvg === null ? null : Math.round(detectMsAvg),
+      detectMs: diag.detectMsAvg === null ? null : Math.round(diag.detectMsAvg),
     });
 
     async function infer() {
-      if (!alive()) return stop();
-      if (filled < WINDOW) patch(diag()); // keep diagnostics fresh while the window fills
+      if (cancelled) return;
+      if (filled < WINDOW) patch(fpsDiag()); // keep diagnostics fresh while the window fills
       if (busy || filled < WINDOW || noFace || document.hidden) return;
       busy = true;
       try {
         const frames = unrollRing(ring, next, WINDOW, FRAME);
         const r = await runModel(frames);
-        if (!alive()) return;
+        if (cancelled) return;
         smoothed = ema(smoothed, r.score);
-        patch({ score: r.score, provisional: false, smoothed, level: r.level, attentionPeak: r.attentionPeak, ...diag() });
+        patch({ score: r.score, provisional: false, smoothed, level: r.level, attentionPeak: r.attentionPeak, ...fpsDiag() });
         onScoreRef.current?.({ ...r, smoothed, gaze: gazeView() });
       } catch (e) {
         console.error("inference failed", e);
@@ -311,14 +443,14 @@ export function useFocusEngine({ videoRef, enabled, onScore }) {
     // Provisional score from the first n frames (30 or 60). Display only: it is NOT passed to
     // onScore, so it is never sent to the server and never used for alerts, debt or calibration.
     async function inferProvisional(n) {
-      if (!alive() || busy || filled >= WINDOW || noFace || document.hidden) return;
+      if (cancelled || busy || filled >= WINDOW || noFace || document.hidden) return;
       busy = true;
       try {
         // While the window is not full yet, frames 0..filled-1 of the ring are already chronological.
         const frames = ring.slice(0, n * FRAME);
         const r = await runModel(frames, n);
-        if (!alive() || filled >= WINDOW) return; // the real score won the race
-        patch({ score: r.score, provisional: true, level: r.level, ...diag() });
+        if (cancelled || filled >= WINDOW) return; // the real score won the race
+        patch({ score: r.score, provisional: true, level: r.level, ...fpsDiag() });
       } catch (e) {
         console.error("provisional inference failed", e);
         noteError("ONNX model (provisional)", e);
@@ -327,51 +459,46 @@ export function useFocusEngine({ videoRef, enabled, onScore }) {
       }
     }
 
-    // Every 500 ms in debug mode: detector confidence, frame brightness, rates -> state.debug
+    // ---- ?debug=1: a second opinion (FaceDetector confidence) + live numbers for the panel ----
+    let detector = null;
+    if (debugOn) getFaceDetector().then((d) => (detector = d)).catch((e) => noteError("FaceDetector load", e));
+    const dbg = { detectorScore: null, detectorFaces: null };
     function debugTick() {
-      if (!alive()) return;
-      const video = videoRef.current;
+      if (cancelled) return;
       const now = performance.now();
-      if (video && video.readyState >= 2 && video.videoWidth > 0) {
+      // The detector looks at exactly the frame MediaPipe got last (never at an unready video).
+      if (detector && lastInput) {
         try {
-          const ctx = small.getContext("2d", { willReadFrequently: true });
-          ctx.drawImage(video, 0, 0, small.width, small.height);
-          const px = ctx.getImageData(0, 0, small.width, small.height).data;
-          let sum = 0;
-          for (let i = 0; i < px.length; i += 4) sum += 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
-          dbg.brightness = Math.round(sum / (px.length / 4));
+          const det = detector.detect(lastInput).detections ?? [];
+          const scores = det.map((d) => d.categories?.[0]?.score ?? 0);
+          dbg.detectorFaces = scores.filter((x) => x >= DETECTOR_FACE).length;
+          dbg.detectorScore = scores.length ? Math.max(...scores) : 0;
         } catch (e) {
-          noteError("brightness", e);
-        }
-        if (detector) {
-          try {
-            const det = detector.detect(video).detections ?? [];
-            const scores = det.map((d) => d.categories?.[0]?.score ?? 0);
-            dbg.detectorFaces = scores.filter((x) => x >= 0.6).length; // weak candidates are not "faces" (the no-face test pattern reaches 0.53)
-            dbg.detectorScore = scores.length ? Math.max(...scores) : 0; // best candidate, even if weak
-          } catch (e) {
-            noteError("FaceDetector", e);
-          }
+          noteError("FaceDetector", e);
         }
       }
+      const lastErr = diag.errors[diag.errors.length - 1];
       patch({
         debug: {
           framesPerSec: stamps.filter((t) => now - t <= 1000).length,
-          facesPerSec: dbg.faceStamps.filter((t) => now - t <= 1000).length,
-          landmarkFaces: dbg.landmarkFaces,
+          facesPerSec: diag.last.filter((r) => r.face && since() - r.atMs <= 1000).length,
+          landmarkFaces: diag.last.length ? Number(diag.last[diag.last.length - 1].face) : null,
           detectorScore: dbg.detectorScore,
           detectorFaces: dbg.detectorFaces,
           detectorReady: !!detector,
-          brightness: dbg.brightness,
-          videoSize: video ? `${video.videoWidth}×${video.videoHeight}` : "—",
-          readyState: video?.readyState ?? null,
-          paused: video?.paused ?? null,
-          delegate: landmarkerDelegate(),
+          brightness: diag.lastBrightness,
+          videoSize: `${video.videoWidth}×${video.videoHeight}`,
+          readyState: video.readyState,
+          paused: video.paused,
+          delegate: diag.delegate,
           input: mode,
-          ticks: dbg.ticks,
-          detectMs: detectMsAvg === null ? null : Math.round(detectMsAvg),
-          lastError: dbg.lastError,
-          lastErrorAt: dbg.lastErrorAt,
+          ticks: diag.framesAnalyzed,
+          facesFound: diag.facesFound,
+          detectMs: diag.detectMsAvg === null ? null : Math.round(diag.detectMsAvg),
+          copyMs: round1(diag.copyMsAvg),
+          landmarkerInitMs: diag.landmarkerInitMs,
+          lastError: lastErr?.error ?? null,
+          lastErrorAt: lastErr ? `${(lastErr.atMs / 1000).toFixed(1)} שנ'` : null,
           yaw: lastPose ? Math.round(lastPose.yaw) : null,
           pitch: lastPose ? Math.round(lastPose.pitch) : null,
           ear: lastPose?.ear != null ? Math.round(lastPose.ear * 100) / 100 : null,
@@ -380,136 +507,71 @@ export function useFocusEngine({ videoRef, enabled, onScore }) {
           neutralProgress: Math.min(poseSamples.length, NEUTRAL_FRAMES),
           lookingAway: !!lastCls?.away,
           eyesClosed: !!lastCls?.closed,
-          restarts,
-          lastRestart,
-          sinceResult: Math.round((now - lastResultAt) / 100) / 10,
+          recreations,
           gazeFor: gazeState.since !== null ? Math.round((now - gazeState.since) / 100) / 10 : 0,
         },
       });
     }
-    // ?debug=1 only: hooks for the self-healing E2E test (simulate a frozen detector / lost GPU).
-    if (debugOn) {
-      window.__focusDebug = {
-        stall: (ms) => (stallUntil = performance.now() + ms),
-        loseContext: () => {
-          const c = document.createElement("canvas");
-          document.body.appendChild(c);
-          c.dispatchEvent(new Event("webglcontextlost"));
-          c.remove();
-        },
-        stats: () => ({ restarts, lastRestart, filled, faceSeen, noFace, delegate: landmarkerDelegate() }),
-      };
-    }
 
-    const onWindowError = (ev) => noteError("window", ev?.reason ?? ev?.error ?? ev?.message);
-    if (debugOn) {
-      window.addEventListener("error", onWindowError);
-      window.addEventListener("unhandledrejection", onWindowError);
-    }
-
-    function startLoop(lm) {
-      landmarker = lm;
-      clearInterval(tickTimer);
-      lastResultAt = performance.now();
-      tickTimer = setInterval(safeTick, 1000 / FPS);
-      if (!inferTimer) inferTimer = setInterval(infer, INFER_EVERY_MS);
-      if (!watchTimer) watchTimer = setInterval(watchdog, 1000);
-    }
-
-    // Rebuild the landmarker and restart the tick loop. The ring buffer is kept, so the score
-    // continues where it was instead of starting over.
-    async function restart(reason, forceCPU = false) {
-      if (restarting || !alive()) return;
-      restarting = true;
-      restarts += 1;
-      lastRestart = `${new Date().toLocaleTimeString("he-IL")}: ${reason}`;
-      console.warn("focus engine restart:", reason);
-      clearInterval(tickTimer);
-      tickTimer = null;
-      landmarker = null;
-      try {
-        videoRef.current?.play?.().catch(() => {});
-        const lm = await resetLandmarker({ forceCPU });
-        if (!alive()) return;
-        consecutiveErrors = 0;
-        startLoop(lm);
-        patch({ restarts });
-      } catch (e) {
-        console.error("landmarker restart failed", e);
-        noteError("restart", e);
-        lastResultAt = performance.now(); // the watchdog tries again in 3 s
-      } finally {
-        restarting = false;
-      }
-    }
-
-    // Watchdog: camera on, tab visible, but MediaPipe has not answered for 3 s -> restart.
-    function watchdog() {
-      if (!alive() || restarting || document.hidden) return;
-      const video = videoRef.current;
-      if (!video || !video.srcObject) return; // camera not attached (nothing to analyze)
-      if (video.paused) video.play().catch(() => {});
-      const now = performance.now();
-      // 3 s, then 6, 9... (max 30 s) while restarts do not help (e.g. the camera itself stalled)
-      const limit = Math.min(WATCHDOG_MS * (1 + failedRestarts), 30_000);
-      if (now - lastResultAt > limit) {
-        failedRestarts += 1;
-        restart(`no detection result for ${Math.round(limit / 1000)} s`);
-      } else if (faceSeen && !faceRestartDone && now - lastResultAt < 1000 && now - lastFaceAt > NO_FACE_RESTART_MS) {
-        // MediaPipe answers but has found no face for 5 s after it did find one: a stuck tracker
-        // looks exactly like this. One fresh landmarker per episode is cheap; if the user really
-        // left, nothing changes.
-        faceRestartDone = true;
-        restart("no face for 5 s after faces were seen (tracker reset)");
-      }
-    }
-
+    // Hidden tab: ticks skip (and say so). Back on the tab: forget the misses from before.
     const onVisibility = () => {
       patch({ paused: document.hidden });
-      if (document.hidden || !alive()) return;
-      // Back on the tab: forget the misses from before, give the watchdog a fresh 3 s, make sure
-      // the preview plays and the loop runs.
+      if (document.hidden) return;
       history.length = 0;
-      lastResultAt = performance.now();
-      lastFaceAt = performance.now();
-      videoRef.current?.play?.().catch(() => {});
-      if (!tickTimer && landmarker && !restarting) startLoop(landmarker);
+      if (video.paused) video.play().catch((e) => noteError("video.play", e));
     };
     document.addEventListener("visibilitychange", onVisibility);
 
-    // A lost WebGL context kills a GPU-delegate landmarker: rebuild it on CPU. (webglcontextlost
-    // does not bubble, so listen in the capture phase on window.)
-    const onContextLost = (ev) => {
-      noteError("webgl", "context lost");
-      restart("WebGL context lost", true);
-    };
-    window.addEventListener("webglcontextlost", onContextLost, true);
-
+    // ---- startup: video ready + own landmarker + model, THEN the loop ----
     setState({ ...initial, status: "loading", paused: document.hidden });
-    if (debugOn) debugTimer = setInterval(debugTick, 500); // runs even while the models load
-    Promise.all([getLandmarker(), loadModel()])
-      .then(([lm]) => {
-        if (!alive() || tickTimer) return; // a cleaned-up (StrictMode) effect never starts a loop
+    if (debugOn) debugTimer = setInterval(debugTick, 500); // runs even while loading
+    const videoReady = startVideo(video, stream, ac.signal, noteError).then(() => {
+      diag.timingsMs.videoReady = since();
+    });
+    const landmarkerReady = createLandmarker().then((c) => {
+      if (cancelled) return c.landmarker.close(); // stopped while it was being created
+      landmarker = c.landmarker;
+      diag.delegate = c.delegate;
+      diag.landmarkerInitMs = c.initMs;
+      diag.timingsMs.landmarkerReady = since();
+    });
+    const modelReady = loadModel().then(() => {
+      diag.timingsMs.modelReady = since();
+    });
+    Promise.all([videoReady, landmarkerReady, modelReady])
+      .then(() => {
+        if (cancelled) return;
+        diag.timingsMs.loopStarted = since();
         patch({ status: "running" });
-        startLoop(lm);
+        tickTimer = setInterval(safeTick, 1000 / FPS);
+        inferTimer = setInterval(infer, INFER_EVERY_MS);
       })
       .catch((e) => {
-        console.error(e);
-        noteError("load", e);
-        if (debugOn) debugTick();
-        patch({ status: "error", error: "לא הצלחנו לטעון את מודל הריכוז. נסי לרענן את הדף." });
+        if (cancelled || e?.name === "AbortError") return;
+        console.error("focus engine start failed", e);
+        noteError("start", e);
+        patch({ status: "error", error: "לא הצלחנו להפעיל את מדידת הריכוז. נסי לרענן את הדף." });
       });
 
     return () => {
       cancelled = true;
-      stop();
+      ac.abort();
+      clearInterval(tickTimer);
+      clearInterval(inferTimer);
+      clearInterval(debugTimer);
+      tickTimer = inferTimer = debugTimer = null;
       document.removeEventListener("visibilitychange", onVisibility);
-      window.removeEventListener("webglcontextlost", onContextLost, true);
-      if (debugOn) delete window.__focusDebug;
-      window.removeEventListener("error", onWindowError);
-      window.removeEventListener("unhandledrejection", onWindowError);
+      if (landmarker) {
+        try {
+          landmarker.close();
+        } catch {
+          /* already broken */
+        }
+        landmarker = null;
+      }
+      if (video.srcObject === stream) video.srcObject = null;
     };
-  }, [enabled, videoRef]);
+  }, [stream, videoRef]);
 
   return state;
 }

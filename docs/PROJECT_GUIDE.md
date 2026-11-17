@@ -147,7 +147,7 @@ elif not inside and i in watched:        # קטע קצר בלי מדידות: "�
 | [api/client.js](../frontend/src/api/client.js) | עטיפה ל-fetch: מוסיפה את הטוקן, ממירה שגיאות להודעות עבריות, ו-401 מוביל ל-login |
 | [auth/AuthContext.jsx](../frontend/src/auth/AuthContext.jsx) | מצב ההתחברות לכל האפליקציה. בטעינה מאמת את הטוקן מול `/users/me` |
 | [focus/config.js](../frontend/src/focus/config.js) | **כל המספרים של המנוע**: גרסת מודל, קצב, חלון, delegate |
-| [focus/useFocusEngine.js](../frontend/src/focus/useFocusEngine.js) | הלולאה: 10fps ו-ring buffer, כל 2 שניות הסקה, ואין פנים. **מתקן את עצמו** (watchdog, חזרה ללשונית, אובדן WebGL) ונותן **ציון ראשוני** מ-30/60 פריימים |
+| [focus/useFocusEngine.js](../frontend/src/focus/useFocusEngine.js) | הלולאה: 10fps ו-ring buffer, כל 2 שניות הסקה, ואין פנים. **רצף הפעלה מפורש** (וידאו מוכן + FaceLandmarker משלו + מודל, ורק אז הלולאה; D-051), עותק ImageData של הפריים, ואבחון ונותן **ציון ראשוני** מ-30/60 פריימים |
 | [focus/model.js](../frontend/src/focus/model.js) | onnxruntime-web: טעינה חד-פעמית (singleton) והרצה. קורא פלטים **לפי שם** |
 | [focus/smoothing.js](../frontend/src/focus/smoothing.js) | EMA, **כיול אישי**, היסטרזיס, cooldown ונקודת חזרה. פונקציות טהורות עם בדיקות |
 | [focus/gaze.js](../frontend/src/focus/gaze.js) | **תנוחת ראש ועיניים** מ-478 הנקודות: yaw, pitch, EAR, תנוחה רגילה אישית וטיימר של 4 שניות. פונקציות טהורות עם בדיקות |
@@ -276,11 +276,12 @@ const pitch = Math.atan2(top.z - chin.z, chin.y - top.y) * DEG; // הקו מצח
 | הכיול האישי (30 שנ', 0.15 מתחת, תקרה 0.65) | [smoothing.js:13-16](../frontend/src/focus/smoothing.js#L13-L16) |
 | מבט הצידה (30° / 25°), עיניים (0.17), 4 שניות | [gaze.js:20-27](../frontend/src/focus/gaze.js#L20-L27) |
 | אין פנים שנכנס לחוב (5 שנ') | [liveDebt.js](../frontend/src/focus/liveDebt.js) `NO_FACE_GAP_MS` |
-| watchdog (3 שנ'), ציון ראשוני (30/60 פריימים) | [useFocusEngine.js](../frontend/src/focus/useFocusEngine.js) `WATCHDOG_MS`, `PROVISIONAL_AT`, `NO_FACE_RESTART_MS` |
+| ציון ראשוני (30/60 פריימים), תמונה שחורה, בנייה מחדש אחרי שגיאה | [useFocusEngine.js](../frontend/src/focus/useFocusEngine.js) `PROVISIONAL_AT`, `BLANK_LEVEL`, `MAX_RECREATE` |
 | גרסת המודל | [config.js:2](../frontend/src/focus/config.js#L2) `MODEL_VERSION` + `scripts/prepare_assets.sh` + [sessions.py:20](../backend/app/routers/sessions.py#L20) |
 | קצב ההסקה (2 שנ') | [config.js:8](../frontend/src/focus/config.js#L8) `INFER_EVERY_MS` |
 | רגישות "אין פנים" | [config.js:10](../frontend/src/focus/config.js#L10) `NO_FACE_MIN` |
-| CPU/GPU ל-MediaPipe | [config.js:20](../frontend/src/focus/config.js#L20) (או `?delegate=GPU` בכתובת) |
+| CPU/GPU ל-MediaPipe | [config.js:25](../frontend/src/focus/config.js#L25) (או `?gpu=1` בכתובת, להשוואה) |
+| מה MediaPipe מקבל (עותק ImageData או הווידאו) | [config.js:30](../frontend/src/focus/config.js#L30) (או `?input=video`) |
 | סף סגירת קטע (0.50) | [segments.py:13](../backend/app/services/segments.py#L13) `CLOSE_THRESHOLD` |
 | 10 השניות אחורה / מיזוג 5 שנ' | [segments.py:14-15](../backend/app/services/segments.py#L14-L15) |
 | תוקף טוקן | [config.py:14](../backend/app/config.py#L14) או `JWT_EXPIRE_MINUTES` ב-.env |
@@ -324,7 +325,7 @@ const pitch = Math.atan2(top.z - chin.z, chin.y - top.y) * DEG; // הקו מצח
 30. **איך אתם יודעים שמישהי מסתכלת הצידה בלי מודל נוסף?** MediaPipe כבר נותן 478 נקודות **בתלת-ממד**. כשהראש מסתובב, הלחי הרחוקה "נכנסת לעומק": הזווית `atan2(Δz, Δx)` בין שתי הלחיים היא ה-yaw. אותו דבר לקו מצח–סנטר (pitch). העיניים: גובה הפתיחה חלקי הרוחב (EAR). משווים לתנוחה הרגילה של אותה משתמשת (10 השניות הראשונות), כי מצלמה מעל או מתחת למסך משנה את הזווית "הרגילה". סטייה של יותר מ-30° או 25° במשך יותר מ-4 שניות מפעילה התראה.
 31. **למה לא החלפתם מודל?** בדקנו (D-048): סובבנו בתלת-ממד את הנקודות של פנים מרוכזות והרצנו את v4_2, v4_7 ו-v4_66. v4_2 ו-v4_66 כמעט קבועים. v4_7 נתן לראש מסובב ציון **גבוה** יותר (0.79 מול 0.70). אף מודל לא פותר את זה, אז השלמנו בגיאומטריה.
 32. **למה "אין פנים" לא נשמר כמדידה עם ציון 0?** כי זה היה משנה את הציון הממוצע ואת מספר המדידות בהיסטוריה, ו"לא היית מול המצלמה" זה לא "ציון 0". במקום זה, טווח של יותר מ-5 שניות נשמר בנפרד (`no_face_gaps`) והשרת הופך אותו לקטע שהוחמץ.
-33. **מה קורה אם הזיהוי "נתקע"?** (D-049) המנוע מתקן את עצמו: כל טיק עטוף ב-try/catch, כך שהלולאה לא מתה; וידאו שעצר מקבל `play()` שוב; פריים שלא היה מוכן לא נספר כ"אין פנים"; כשחוזרים ללשונית ההיסטוריה מתאפסת והלולאה ממשיכה; אובדן הקשר ל-WebGL בונה את FaceLandmarker מחדש על CPU; ו-watchdog בונה מחדש את הלולאה ואת ה-landmarker אם MediaPipe לא ענה 3 שניות (או אם אין פנים 5 שניות אחרי שכבר היו). בדיקה של 3 דקות רצופות עם החלפת לשונית, "הקפאה" מדומה ואובדן WebGL: אף מדידה לא אבדה (86 נשלחו, 86 נשמרו).
+33. **מה קורה אם הזיהוי "נתקע", או לא מזהה פנים בהתחלה?** (D-051) חיפשנו את השורש. מצאנו בניסוי ש-FaceLandmarker שקיבל פעם אחת פריים לא מוכן **נשבר לתמיד**, ושהיה מופע אחד משותף לכל הדף, כך שרק רענון עזר. עכשיו: (1) לכל מדידה FaceLandmarker **משלה**, שנסגר בסיום; (2) הלולאה מתחילה רק אחרי `loadeddata`, `play()` ו-`videoWidth > 0`; (3) בכל פריים בודקים שה-track חי ושהווידאו מנגן, ופריים שדולג לא נספר כ"אין פנים"; (4) MediaPipe מקבל עותק פיקסלים (ImageData), לא את תג הווידאו; (5) שגיאת זיהוי = מופע חדש (עד 3 פעמים). בדיקת E2E פותחת 20 סשנים ברצף, ומוודאת אחרי כל אחד שהמצלמה כבתה. ב-`?debug=1` הכפתור "העתקת אבחון" מעתיק JSON עם כל מה שצריך כדי להבין תקלה במחשב אחר.
 
 ---
 

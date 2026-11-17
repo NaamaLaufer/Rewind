@@ -46,7 +46,9 @@ export default function ContentView() {
   const [cam, setCam] = useState({ status: "off", error: null }); // off|consent|starting|on|skipped
   const [camRefresh, setCamRefresh] = useState(0);
   const streamRef = useRef(null);
-  const videoRef = useRef(null);
+  const [camStream, setCamStream] = useState(null); // the live camera stream (handed to the engine)
+  const videoRef = useRef(null); // the ONE <video> that shows the camera; the engine attaches the stream
+  const mountedRef = useRef(true);
 
   const [readings, setReadings] = useState([]);
   const [noFaceMarks, setNoFaceMarks] = useState([]);
@@ -123,14 +125,20 @@ export default function ContentView() {
   const stopCamera = useCallback(() => {
     stopStream(streamRef.current);
     streamRef.current = null;
-    if (videoRef.current) videoRef.current.srcObject = null;
+    setCamStream(null);
   }, []);
 
   const enableCamera = async (deviceId) => {
     setCam({ status: "starting", error: null });
+    stopCamera(); // never two streams at once (e.g. "retry" after an error)
     try {
       const stream = await openCamera(deviceId);
+      if (!mountedRef.current) {
+        stopStream(stream); // the user left the page while the browser was asking for permission
+        return;
+      }
       streamRef.current = stream;
+      setCamStream(stream);
       setCam({ status: "on", error: null });
       setCamRefresh((k) => k + 1); // labels are only available after permission
       if (!isReview) playerRef.current?.play(); // measuring started -> start the video too
@@ -138,13 +146,6 @@ export default function ContentView() {
       setCam({ status: "consent", error: cameraErrorMessage(e) });
     }
   };
-
-  useEffect(() => {
-    if (cam.status === "on" && videoRef.current && streamRef.current) {
-      videoRef.current.srcObject = streamRef.current;
-      videoRef.current.play().catch(() => {});
-    }
-  }, [cam.status]);
 
   // ---------- measurement ----------
   const postReading = useCallback(async (sid, body) => {
@@ -198,7 +199,7 @@ export default function ContentView() {
     }
   }, [getPosition, postReading]);
 
-  const engine = useFocusEngine({ videoRef, enabled: phase === "active" && cam.status === "on", onScore });
+  const engine = useFocusEngine({ videoRef, stream: phase === "active" && cam.status === "on" ? camStream : null, onScore });
 
   // Looking away / eyes closed for more than 4 s (D-046): enter "low focus" immediately,
   // without waiting for the model score. Return point = where the look-away began, minus 5 s.
@@ -350,11 +351,14 @@ export default function ContentView() {
       flushRef.current(true); // the gap request is sent first, then /end
       api(`/sessions/${s.id}/end`, { method: "POST", keepalive: true }).catch(() => {});
     };
+    mountedRef.current = true;
     window.addEventListener("beforeunload", onUnload);
     return () => {
+      mountedRef.current = false;
       window.removeEventListener("beforeunload", onUnload);
       onUnload();
       stopStream(streamRef.current);
+      streamRef.current = null;
     };
   }, []);
 
@@ -577,6 +581,11 @@ export default function ContentView() {
                       ⚠️ לא זוהו פנים. ודאי שהפנים שלך מול המצלמה ובתאורה טובה.
                     </div>
                   )}
+                  {engine.blank && !engine.noFace && (
+                    <div className="msg msg-warning" role="alert" data-testid="camera-blank">
+                      המצלמה שולחת תמונה שחורה. ודאי שהמצלמה לא מכוסה ושאף תוכנה אחרת לא משתמשת בה, או בחרי מצלמה אחרת.
+                    </div>
+                  )}
                   {engine.paused && <div className="msg msg-info" role="status">המדידה מושהית כשהלשונית לא פעילה.</div>}
                   {engine.status === "loading" && <div className="msg msg-info" role="status">טוענת את מודל הריכוז (פעם ראשונה עשויה לקחת כמה שניות)...</div>}
                   {engine.status === "error" && <div className="msg msg-error" role="alert">{engine.error}</div>}
@@ -608,7 +617,7 @@ export default function ContentView() {
                 <DebtMeter value={liveDebt} unit={unit} />
               )}
 
-              {debugEnabled() && <DebugPanel engine={engine} cam={cam} stream={streamRef.current}
+              {debugEnabled() && <DebugPanel engine={engine} cam={cam} stream={camStream}
                 calibration={calView} noFaceFor={noFaceFor} />}
 
               <button type="button" className="btn btn-danger btn-lg btn-block" style={{ marginTop: 16 }} disabled={busy} onClick={endSession}>

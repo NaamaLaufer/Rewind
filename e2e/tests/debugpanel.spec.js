@@ -18,8 +18,36 @@ test("debug panel with a face: faces/sec > 0, confidence, resolution, camera lab
   const text = await panel.innerText();
   console.log("---- panel (face) ----\n" + text);
   expect(text).toMatch(/פנים שזוהו בשנייה\s+([1-9]\d*) מתוך/);
-  expect(text).toMatch(/ביטחון זיהוי \(FaceDetector\)\s+הכי גבוה: 0\.[6-9]\d · פנים מעל 0\.6: 1/);
+  expect(text).toMatch(/ביטחון זיהוי \(FaceDetector\)\s+הכי גבוה: 0\.[89]\d · פנים מעל 0\.75: 1/);
   expect(text).toMatch(/רזולוציית וידאו\s+\d+×\d+/);
-  expect(text).toMatch(/delegate \/ input\s+CPU \/ video/);
+  expect(text).toMatch(/delegate \/ input\s+CPU \/ image/);
+  expect(text).toMatch(/אתחול FaceLandmarker\s+\d+ms/);
+  expect(text).toMatch(/זמן לפריים: העתקה \/ זיהוי\s+[\d.]+ms \/ \d+ms/);
   await panel.screenshot({ path: "test-results/debug-panel-face.png" });
+});
+
+test("'העתקת אבחון' copies a JSON snapshot of the camera and the engine", async ({ page, context }) => {
+  await context.grantPermissions(["camera", "clipboard-read", "clipboard-write"]);
+  await openSessionWithCamera(page, "debugcopy", "?debug=1");
+  await expect(page.getByTestId("face-ok")).toBeVisible({ timeout: 20_000 });
+  await page.waitForTimeout(2500); // > 20 analyzed frames
+  await page.getByRole("button", { name: /העתקת אבחון/ }).click();
+  await expect(page.getByText("האבחון הועתק")).toBeVisible();
+  const d = JSON.parse(await page.evaluate(() => navigator.clipboard.readText()));
+  console.log("copied diagnostics:", JSON.stringify(d).slice(0, 600));
+  expect(d.userAgent).toContain("Chrome");
+  expect(d.camera.label).toBeTruthy();
+  expect(d.camera.width).toBeGreaterThan(0);
+  expect(d.camera.frameRate).toBeGreaterThan(0);
+  expect(d.delegate).toBe("CPU");
+  expect(d.landmarkerInitMs).toBeGreaterThan(0);
+  expect(d.video).toMatchObject({ paused: false, streamAttached: true });
+  expect(d.video.readyState).toBeGreaterThanOrEqual(2);
+  expect(d.video.videoWidth).toBeGreaterThan(0);
+  expect(d.framesAnalyzed).toBeGreaterThan(20);
+  expect(d.facesFound).toBeGreaterThan(0);
+  expect(d.lastResults).toHaveLength(20);
+  expect(d.lastResults[0]).toEqual(expect.objectContaining({ atMs: expect.any(Number), face: expect.any(Boolean) }));
+  expect(d.recreations).toBe(0);
+  expect(Array.isArray(d.lastErrors)).toBe(true);
 });

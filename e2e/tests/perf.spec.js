@@ -12,7 +12,7 @@ for (const delegate of ["CPU", "GPU"]) {
     await page.getByLabel("קישור לסרטון YouTube").fill(YT_URL);
     await page.getByRole("button", { name: "הוספה לספרייה" }).click();
     await page.getByRole("link", { name: "פתיחה" }).first().click();
-    await page.goto(`${page.url()}?delegate=${delegate}`);
+    await page.goto(`${page.url()}${delegate === "GPU" ? "?gpu=1" : ""}`);
     await page.getByRole("button", { name: /התחלת סשן/ }).click();
     await page.getByRole("button", { name: /הפעלת מצלמה/ }).click();
     const card = page.locator("section.score-card");
