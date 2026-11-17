@@ -20,24 +20,26 @@ function Add-Result([string]$n, [string]$topic, [bool]$ok, [string]$detail, [swi
 }
 
 $ip = GcOut compute addresses describe rewind-ip --global --format="value(address)"
-$curlBase = @("-s", "--max-time", "20")
+# --ssl-no-revoke: Windows curl (Schannel) otherwise fails when the CRL server is unreachable.
+# The certificate chain and host name are still verified (no -k).
+$curlBase = @("-s", "--max-time", "20", "--ssl-no-revoke")
 if ($ViaIp) {
     $curlBase += @("--resolve", "${DOMAIN}:443:$ip", "--resolve", "${DOMAIN}:80:$ip", "-k")
     Warn "-ViaIp: TLS is NOT verified (diagnostics while the certificate is provisioning)"
 }
-function Curl([string[]]$extra) { & curl.exe @curlBase @extra }
+function Invoke-Curl([string[]]$extra) { & curl.exe @curlBase @extra }
 
 Step "1. Domain and HTTPS"
-$code = Curl @("-o", "NUL", "-w", "%{http_code}", "https://$DOMAIN/")
+$code = Invoke-Curl @("-o", "NUL", "-w", "%{http_code}", "https://$DOMAIN/")
 $certOk = ($code -eq "200")
 Add-Result "1a" "https://$DOMAIN" ($certOk -and -not $ViaIp) "HTTP $code$(if (-not $ViaIp) { ', certificate verified by Windows (no -k)' } else { ' (via IP, TLS not verified)' })" -Pending:$ViaIp
-$redir = Curl @("-o", "NUL", "-w", "%{http_code} %{redirect_url}", "http://$DOMAIN/history")
-Add-Result "1b" "http -> https" ($redir -like "301 https://$DOMAIN/history*") "$redir"
-$hsts = (Curl @("-I", "https://$DOMAIN/")) -match "strict-transport-security"
+$redir = Invoke-Curl @("-o", "NUL", "-w", "%{http_code} %{redirect_url}", "http://$DOMAIN/history")
+Add-Result "1b" "http -> https" ($redir -match "^301 https://$([regex]::Escape($DOMAIN))(:443)?/history")  # Google writes :443 into Location "$redir"
+$hsts = (Invoke-Curl @("-I", "https://$DOMAIN/")) -match "strict-transport-security"
 Add-Result "1c" "HSTS header" ([bool]$hsts) "$($hsts -join ' ')"
 
 Step "2. Backend"
-$health = Curl @("-w", " %{http_code}", "https://$DOMAIN/health")
+$health = Invoke-Curl @("-w", " %{http_code}", "https://$DOMAIN/health")
 Add-Result "2" "/health" ($health -match '^\{"status":"ok"\} 200$') "$health"
 
 Step "3-4. E2E (Playwright, fake camera) against https://$DOMAIN"
@@ -47,7 +49,12 @@ else {
     try {
         $env:BASE_URL = "https://$DOMAIN"
         $log = Join-Path $env:TEMP "rewind-e2e-cloud.txt"
-        & npx playwright test tests/grading.spec.js tests/noface.spec.js tests/secondpass.spec.js tests/cloud.spec.js tests/debugpanel.spec.js *> $log
+        # Push-Location does not change the process working directory that native tools see, so set
+        # it explicitly and run Playwright's CLI by path (npx could not find it from the script).
+        $e2eDir = (Get-Location).Path
+        [Environment]::CurrentDirectory = $e2eDir
+        & node (Join-Path $e2eDir "node_modules/@playwright/test/cli.js") test --config (Join-Path $e2eDir "playwright.config.js") `
+            tests/grading.spec.js tests/noface.spec.js tests/secondpass.spec.js tests/cloud.spec.js tests/debugpanel.spec.js *> $log
         $e2eOk = ($LASTEXITCODE -eq 0)
         $summary = (Select-String -Path $log -Pattern "^\s+\d+ (passed|failed|skipped)" | ForEach-Object { $_.Line.Trim() }) -join ", "
         $x20 = (Select-String -Path $log -Pattern "x20:" | Select-Object -First 1).Line
@@ -68,7 +75,7 @@ Step "+ Isolation: direct *.run.app URLs are blocked from outside"
 foreach ($svc in @("rewind-backend", "rewind-frontend")) {
     $url = GcOut run services describe $svc --region=$REGION --format="value(status.url)"
     if (-not $url) { Add-Result "+" "$svc direct URL" $false "service not found"; continue }
-    $c = & curl.exe -s -o NUL -w "%{http_code}" --max-time 20 "$url/health"
+    $c = & curl.exe -s --ssl-no-revoke -o NUL -w "%{http_code}" --max-time 20 "$url/health"
     Add-Result "+" "$svc direct URL" ($c -in @("403", "404")) "$url -> $c (expected 403/404: ingress = internal-and-cloud-load-balancing)"
 }
 

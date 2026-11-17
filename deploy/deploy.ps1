@@ -52,6 +52,8 @@ else {
 
 # MONGODB_URI: existing secret > deploy\.secrets\mongodb_uri.txt > Atlas CLI > pending (USER_TODO).
 function Set-MongoSecret([string]$uri) {
+    # Exactly one URI token; anything else (e.g. CLI output mixed in) must never become the secret.
+    if ($uri -notmatch "^mongodb(\+srv)?://\S+$") { throw "refusing to store MONGODB_URI: the value is not a single MongoDB URI (not shown)" }
     With-TempSecretFile $uri { param($f)
         if (Exists secrets describe MONGODB_URI) { GcRun secrets versions add MONGODB_URI --data-file=$f }
         else { GcRun secrets create MONGODB_URI --replication-policy=automatic --data-file=$f }
@@ -69,15 +71,16 @@ function New-AtlasDatabase {
     $projId = $proj.id
     & atlas clusters describe $ATLAS_CLUSTER --projectId $projId *> $null
     if ($LASTEXITCODE -ne 0) {
-        & atlas clusters create $ATLAS_CLUSTER --provider GCP --region $ATLAS_REGION --tier M0 --projectId $projId
+        # | Out-Host: show the CLI output but do NOT let it become part of this function's return value
+        & atlas clusters create $ATLAS_CLUSTER --provider GCP --region $ATLAS_REGION --tier M0 --projectId $projId | Out-Host
         if ($LASTEXITCODE -ne 0) { throw "atlas clusters create failed" }
         Info "waiting for the cluster (a few minutes)..."
-        & atlas clusters watch $ATLAS_CLUSTER --projectId $projId
+        & atlas clusters watch $ATLAS_CLUSTER --projectId $projId | Out-Host
     }
     # Cloud Run has no fixed outbound IP (that would need VPC + Cloud NAT, which cost money).
     $acl = (& atlas accessLists list --projectId $projId --output json | ConvertFrom-Json).results
     if (-not ($acl | Where-Object { $_.cidrBlock -eq "0.0.0.0/0" })) {
-        & atlas accessLists create 0.0.0.0/0 --type cidrBlock --comment "Cloud Run: no fixed egress IP (see D-0xx)" --projectId $projId
+        & atlas accessLists create 0.0.0.0/0 --type cidrBlock --comment "Cloud Run: no fixed egress IP (see D-0xx)" --projectId $projId | Out-Host
         if ($LASTEXITCODE -ne 0) { throw "atlas accessLists create failed" }
     }
     $pw = New-RandomAlnum 32
@@ -99,8 +102,20 @@ if (Test-Path $uriFile) {
     Set-MongoSecret $uri
     Remove-Item -Force $uriFile
     Ok "MONGODB_URI stored from deploy\.secrets\mongodb_uri.txt (file deleted)"
-} elseif (Exists secrets describe MONGODB_URI) {
-    Ok "MONGODB_URI exists (left untouched)"
+} elseif ((Exists secrets describe MONGODB_URI) -and ((GcOut secrets versions access latest --secret=MONGODB_URI) -match "^mongodb(\+srv)?://\S+$")) {
+    Ok "MONGODB_URI exists and is a valid URI (left untouched, not shown)"
+} elseif (-not $DryRun -and (Exists secrets describe MONGODB_URI)) {
+    # The latest version is not a single URI (D-065): regenerate through Atlas (new DB password),
+    # add a new version, and disable every older version.
+    Warn "MONGODB_URI exists but its latest version is not a valid URI: regenerating it via Atlas"
+    $uri = New-AtlasDatabase
+    if (-not $uri) { throw "MONGODB_URI is invalid and the Atlas CLI is not logged in: run atlas auth login, or put the URI in deploy\.secrets\mongodb_uri.txt" }
+    Set-MongoSecret $uri; $uri = $null
+    $latest = GcOut secrets versions list MONGODB_URI --filter="state=ENABLED" --sort-by="~createTime" --format="value(name)" --limit=1
+    foreach ($v in @((GcOut secrets versions list MONGODB_URI --filter="state=ENABLED" --format="value(name)") -split "`n" | Where-Object { $_ -and $_ -ne $latest })) {
+        GcRun secrets versions disable ($v -split "/")[-1] --secret=MONGODB_URI
+    }
+    Ok "MONGODB_URI regenerated (new version; older versions disabled; not shown)"
 } elseif ($DryRun) {
     Info "[dry-run] MONGODB_URI would come from Atlas CLI or deploy\.secrets\mongodb_uri.txt"
 } else {
@@ -221,7 +236,7 @@ if (Exists compute forwarding-rules describe rewind-http-fr --global) { Ok "forw
 else { GcRun compute forwarding-rules create rewind-http-fr --global --load-balancing-scheme=EXTERNAL_MANAGED --address=rewind-ip --target-http-proxy=rewind-http-proxy --ports=80; Ok "forwarding rule 80 created (redirect)" }
 
 # ---------------------------------------------------------------------------------------------
-Step "8. Budget ($BUDGET_USD USD, alerts at 50/90/100%)"
+Step "8. Budget ($BUDGET_AMOUNT $BUDGET_CURRENCY, alerts at 50/90/100%)"
 try {
     $billing = (GcOut billing projects describe $GCP_PROJECT_ID --format="value(billingAccountName)") -replace "^billingAccounts/", ""
     if (-not $billing -and -not $DryRun) { throw "no billing account linked to $GCP_PROJECT_ID" }
@@ -229,12 +244,12 @@ try {
     if ($budgets -match "rewind-budget") { Ok "budget rewind-budget exists" }
     else {
         GcRun billing budgets create --billing-account=$billing --billing-project=$GCP_PROJECT_ID --display-name="rewind-budget" `
-            --budget-amount="${BUDGET_USD}USD" --threshold-rule=percent=0.5 --threshold-rule=percent=0.9 --threshold-rule=percent=1.0
+            --budget-amount="$BUDGET_AMOUNT$BUDGET_CURRENCY" --threshold-rule=percent=0.5 --threshold-rule=percent=0.9 --threshold-rule=percent=1.0
         Ok "budget created"
     }
 } catch {
     Warn "budget not created: $($_.Exception.Message)"
-    $pending.Add("Budget: Console > Billing > Budgets & alerts > Create: rewind-budget, $BUDGET_USD USD, thresholds 50/90/100%")
+    $pending.Add("Budget: Console > Billing > Budgets & alerts > Create: rewind-budget, $BUDGET_AMOUNT $BUDGET_CURRENCY, thresholds 50/90/100%")
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -249,10 +264,15 @@ try {
             --matcher-content=ok --matcher-type=contains-string   # body {"status":"ok"} (503 says "unavailable")
         Ok "uptime check created"
     }
-    if ($ALERT_EMAIL) { & (Join-Path $PSScriptRoot "alert.ps1") -DryRun:$DryRun }
 } catch {
     Warn "uptime check not created: $($_.Exception.Message)"
     $pending.Add("Uptime check: run deploy.ps1 again, or Console > Monitoring > Uptime checks > https://$DOMAIN/health every 5 min")
+}
+
+if ($ALERT_EMAIL) {
+    Step "10. E-mail alert when the uptime check fails ($ALERT_EMAIL)"
+    try { & (Join-Path $PSScriptRoot "alert.ps1") -DryRun:$DryRun }
+    catch { Warn "alert not created: $($_.Exception.Message)"; $pending.Add("Alert: Console > Monitoring > Alerting > create a policy on the uptime check rewind-health, e-mail $ALERT_EMAIL") }
 }
 
 # ---------------------------------------------------------------------------------------------

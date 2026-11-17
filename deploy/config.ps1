@@ -1,16 +1,19 @@
 ﻿# Rewind on Google Cloud (assignment 4): settings. NO SECRETS in this file (it is in Git).
-# Fill the TODO_USER values, then run:  powershell -ExecutionPolicy Bypass -File deploy\deploy.ps1
+# Run:  powershell -ExecutionPolicy Bypass -File deploy\deploy.ps1
 
-$GCP_PROJECT_ID = "TODO_USER"            # the project ID in Google Cloud (the ID, not the display name)
+$GCP_PROJECT_ID = "rewind-515021"        # the project ID in Google Cloud (the ID, not the display name)
 $REGION         = "europe-west1"         # Belgium; Atlas M0 on GCP runs in the same region (WESTERN_EUROPE)
-$DOMAIN         = "TODO_USER.ddns.net"   # the No-IP hostname
+$DOMAIN         = "rewind.ddns.net"      # the No-IP hostname
 $PROJECT_SLUG   = "rewind"               # submission JSON id: English, no spaces
-$MEMBERS        = @("TODO_USER Full Name 1", "TODO_USER Full Name 2")
-$BUDGET_USD     = 50
-$ALERT_EMAIL    = ""                     # optional: e-mail for the uptime alert
+$MEMBERS        = @("Naama Laufer", "Tamar Laufer")
 
-# Optional: Docker Hub user for the assignment-3 images (same code, tag 1.1.0). Empty = skip.
-$DOCKERHUB_USER = ""
+# Budget in the billing account's currency (this account is billed in ILS).
+$BUDGET_AMOUNT   = 200
+$BUDGET_CURRENCY = "ILS"
+$ALERT_EMAIL     = "naama4212@gmail.com" # optional: e-mail for the uptime alert
+
+# Docker Hub user for the assignment-3 images (same code, tag 1.1.0). Image names must be lowercase.
+$DOCKERHUB_USER = "naamalaufer"
 
 # Atlas (only used when the Atlas CLI is logged in; otherwise see docs/USER_TODO.md)
 $ATLAS_PROJECT  = "rewind"

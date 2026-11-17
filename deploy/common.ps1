@@ -12,6 +12,8 @@ foreach ($p in @("$Tools\google-cloud-sdk\bin", "$Tools\atlas\bin", "$Tools\gh\b
     if ((Test-Path $p) -and ($env:PATH -notlike "*$p*")) { $env:PATH = "$p;$env:PATH" }
 }
 $env:CLOUDSDK_CORE_DISABLE_PROMPTS = "1"
+# Windows PowerShell 5.1 defaults to TLS 1.0/1.1; the Google load balancer needs TLS 1.2+.
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 $AR = "$REGION-docker.pkg.dev/$GCP_PROJECT_ID/rewind"
 $BACKEND_SA = "rewind-backend@$GCP_PROJECT_ID.iam.gserviceaccount.com"
