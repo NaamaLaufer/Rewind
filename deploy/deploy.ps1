@@ -221,7 +221,7 @@ if (Exists compute forwarding-rules describe rewind-http-fr --global) { Ok "forw
 else { GcRun compute forwarding-rules create rewind-http-fr --global --load-balancing-scheme=EXTERNAL_MANAGED --address=rewind-ip --target-http-proxy=rewind-http-proxy --ports=80; Ok "forwarding rule 80 created (redirect)" }
 
 # ---------------------------------------------------------------------------------------------
-Step "8. Budget ($BUDGET_USD USD, alerts at 50/90/100%)"
+Step "8. Budget ($BUDGET_AMOUNT $BUDGET_CURRENCY, alerts at 50/90/100%)"
 try {
     $billing = (GcOut billing projects describe $GCP_PROJECT_ID --format="value(billingAccountName)") -replace "^billingAccounts/", ""
     if (-not $billing -and -not $DryRun) { throw "no billing account linked to $GCP_PROJECT_ID" }
@@ -229,12 +229,12 @@ try {
     if ($budgets -match "rewind-budget") { Ok "budget rewind-budget exists" }
     else {
         GcRun billing budgets create --billing-account=$billing --billing-project=$GCP_PROJECT_ID --display-name="rewind-budget" `
-            --budget-amount="${BUDGET_USD}USD" --threshold-rule=percent=0.5 --threshold-rule=percent=0.9 --threshold-rule=percent=1.0
+            --budget-amount="$BUDGET_AMOUNT$BUDGET_CURRENCY" --threshold-rule=percent=0.5 --threshold-rule=percent=0.9 --threshold-rule=percent=1.0
         Ok "budget created"
     }
 } catch {
     Warn "budget not created: $($_.Exception.Message)"
-    $pending.Add("Budget: Console > Billing > Budgets & alerts > Create: rewind-budget, $BUDGET_USD USD, thresholds 50/90/100%")
+    $pending.Add("Budget: Console > Billing > Budgets & alerts > Create: rewind-budget, $BUDGET_AMOUNT $BUDGET_CURRENCY, thresholds 50/90/100%")
 }
 
 # ---------------------------------------------------------------------------------------------
