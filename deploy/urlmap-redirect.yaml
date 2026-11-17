@@ -1,0 +1,5 @@
+# Port 80: every http:// request gets a 301 to the same URL on https://.
+name: rewind-http-redirect
+defaultUrlRedirect:
+  httpsRedirect: true
+  redirectResponseCode: MOVED_PERMANENTLY_DEFAULT

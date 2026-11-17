@@ -45,3 +45,8 @@ e2e/fixtures/experiments/
 test-results/
 playwright-report/
 
+
+# Assignment 4: cloud secrets never enter Git
+deploy/.secrets/
+*.secret
+*.key
