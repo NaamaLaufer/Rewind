@@ -12,12 +12,15 @@ RUN test -f public/models/v4_7.onnx || (echo "missing public/models/v4_7.onnx - 
 RUN node scripts/fetch-assets.mjs && test -f public/mediapipe/face_landmarker.task && test -f public/mediapipe/blaze_face_short_range.tflite
 RUN npm run build
 
-# ---- stage 2: serve with nginx (also reverse-proxies /api to the backend) ----
+# ---- stage 2: serve with nginx ----
+# The SAME image runs in docker compose (assignment 3) and in Cloud Run (assignment 4):
+#   PORT        nginx listens here (Cloud Run sets it; default 3000).
+#   BACKEND_URL non-empty -> nginx also proxies /api and /health there (compose).
+#               empty     -> no proxy; the cloud load balancer routes /api (see 40-api-proxy.sh).
 FROM nginx:1.27-alpine
-ENV BACKEND_URL=http://backend:8000 \
-    NGINX_RESOLVER=127.0.0.11 \
-    NGINX_ENVSUBST_FILTER="^(BACKEND_URL|NGINX_RESOLVER)$"
+ENV PORT=3000     BACKEND_URL=http://backend:8000     NGINX_RESOLVER=127.0.0.11     NGINX_ENVSUBST_FILTER="^PORT$"
 COPY nginx/security-headers.conf /etc/nginx/snippets/security-headers.conf
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
+COPY --chmod=755 docker-entrypoint.d/40-api-proxy.sh /docker-entrypoint.d/40-api-proxy.sh
 COPY --from=build /app/dist /usr/share/nginx/html
-EXPOSE 80
+EXPOSE 3000
