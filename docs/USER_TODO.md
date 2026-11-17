@@ -2,23 +2,9 @@
 
 ## ⚡ מטלה 4 (ענן): מה צריך ממך עכשיו
 
-### >>> ב-No-IP: לעדכן את `rewind.ddns.net` לרשומת A אחת בלבד עם ה-IP `8.233.237.59` <<<
-No-IP ← Dynamic DNS ← Hostnames ← `rewind.ddns.net` ← Modify ← IPv4 Address: `8.233.237.59` ← Save. **רק** רשומה אחת, בלי AAAA או IP נוסף.
-(ה-IP נשמר גם ב-`deploy\last-ip.txt`.) כרגע ה-hostname מצביע על `1.1.1.1`, וכל עוד זה כך התעודה לא תונפק.
-
-**מה כבר רץ בענן** (פרויקט `rewind-515021`, europe-west1):
-- Cloud Run: `rewind-backend` (2–5 מופעים) ו-`rewind-frontend` (1–5), נגישים רק דרך ה-LB.
-- Atlas M0 `rewind`, וסודות ב-Secret Manager.
-- LB עם IP סטטי, URL map ו-redirect מ-http, ותעודה מנוהלת (ממתינה ל-DNS).
-- Budget של 200 ILS, Uptime check, והתראה במייל.
-
-**אחרי העדכון ב-No-IP** (אם אני כבר לא רץ ב-polling):
-```powershell
-powershell -ExecutionPolicy Bypass -File deploy\status.ps1 -Wait     # עד שהתעודה ACTIVE (עד 60 דק')
-powershell -ExecutionPolicy Bypass -File deploy\verify.ps1           # בדיקה מלאה + E2E מול https://rewind.ddns.net
-powershell -ExecutionPolicy Bypass -File deploy\make-submission.ps1  # submission\rewind.json
-```
-`FAILED_NOT_VISIBLE` = רשומת ה-A עוד לא `8.233.237.59`. Google מנסה שוב לבד.
+### ✅ האתר חי: https://rewind.ddns.net (18.11.2026, 01:46)
+רשומת ה-A ב-No-IP = `8.233.237.59`, התעודה ACTIVE, ו-`deploy\verify.ps1` ירוק כולו (13/13 E2E מול הדומיין). `submission\rewind.json` נוצר ונבדק.
+אם משהו ישתנה: `deploy\status.ps1` ואז `deploy\verify.ps1`.
 
 **ואז:**
 1. להגיש את `submission\rewind.json` (רק אותו).

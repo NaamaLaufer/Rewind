@@ -158,7 +158,7 @@ powershell -ExecutionPolicy Bypass -File deploy\<script>.ps1
 | MongoDB Atlas M0 | חינמי | 0$ |
 | **סה"כ** | | **כ-40–50$ לחודש** מתוך קרדיט של 300$ |
 
-**Budget** של 50$ עם התראות ב-50%, ב-90% וב-100% (`rewind-budget`). **לא לשדרג את חשבון ה-Free Trial.** אחרי שהציון התקבל: `.\deploy\teardown.ps1 -Yes`. רוב העלות היא ה-forwarding rules וה-min instances, ושניהם נמחקים.
+**Budget** של 200 ILS (כ-50$, החשבון מחויב בשקלים) עם התראות ב-50%, ב-90% וב-100% (`rewind-budget`). **לא לשדרג את חשבון ה-Free Trial.** אחרי שהציון התקבל: `.\deploy\teardown.ps1 -Yes`. רוב העלות היא ה-forwarding rules וה-min instances, ושניהם נמחקים.
 
 ---
 
@@ -186,7 +186,7 @@ powershell -ExecutionPolicy Bypass -File deploy\<script>.ps1
 20. **למה אותה תמונה בשני המקומות?** כדי שמה שבדקנו מקומית זה בדיוק מה שרץ בענן. משתני סביבה קובעים את הפורט (`PORT`) והאם nginx עושה proxy (`BACKEND_URL`).
 21. **מה היה נשבר בלי השינוי ב-nginx?** ב-compose nginx עושה proxy ל-`http://backend:8000`. בענן אין host בשם `backend`, ולכן ה-proxy נוצר רק כש-`BACKEND_URL` לא ריק (D-052).
 22. **איך הגבלת הניסיונות עובדת מאחורי LB?** uvicorn עם `--proxy-headers` לוקח את ה-IP של הלקוח מ-`X-Forwarded-For`. כי הכותרת הזו ניתנת לזיוף, הוספנו גם מגבלה של 20 כישלונות לאימייל מכל ה-IP יחד (D-054).
-23. **כמה זה עולה?** בערך 40–50$ לחודש, בעיקר ה-forwarding rules ו-min instances. יש Budget של 50$ עם התראות, ו-teardown אחרי הבדיקה.
+23. **כמה זה עולה?** בערך 40–50$ לחודש, בעיקר ה-forwarding rules ו-min instances. יש Budget של 200 ILS עם התראות, ו-teardown אחרי הבדיקה.
 24. **למה Uptime check?** כדי לדעת מיד אם האתר נפל בחלון הבדיקה. הוא בודק `https://DOMAIN/health` כל 5 דקות, כולל שהגוף מכיל `ok`, כלומר שהשרת **וגם** המסד עובדים.
 25. **מה ההבדל בין משתנה סביבה לסוד?** `ENV`, `DB_NAME` ו-`ALLOWED_ORIGINS` הם הגדרות שלא מזיק שיראו אותן, ולכן הם משתנים רגילים. URI עם סיסמה ומפתח חתימה הם סודות: Secret Manager, הרשאה פר-SA, היסטוריית גרסאות.
 26. **מה עושים אם סוד דלף?** מוסיפים גרסה חדשה ב-Secret Manager (`gcloud secrets versions add`), מחליפים סיסמה ב-Atlas, ומריצים `redeploy`. אם זה `JWT_SECRET`, כל המשתמשים יתנתקו, וזה בדיוק מה שרוצים.

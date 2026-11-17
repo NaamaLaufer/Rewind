@@ -1,41 +1,52 @@
 # מטלה 4: דוח בדיקות
 
-**מצב נכון ל-18.11.2026:** הקוד המוכן לענן נבדק מקומית במלואו. **הפריסה לענן עוד לא בוצעה**: בסשן העבודה אף חשבון לא היה מחובר (gcloud, Atlas, gh, Docker Hub), ופרטי הפרויקט ב-`deploy/config.ps1` עדיין `TODO_USER`. לכן כל בדיקות הענן מסומנות ⚠️ "ממתין", עם הפקודה שמשלימה אותן. לא המצאנו תוצאות.
+**מצב נכון ל-18.11.2026, 01:46:** האתר חי ב-**https://rewind.ddns.net**. פרויקט GCP `rewind-515021` (europe-west1), IP סטטי `8.233.237.59`, תעודה **ACTIVE**. כל השורות בטבלת הבדיקה של מטלה 4 ירוקות. הפלט הגולמי: [A4_VERIFY_RESULTS.md](A4_VERIFY_RESULTS.md) (`deploy\verify.ps1`).
 
-## א. טבלת הבדיקה של מטלה 4 (סעיף 7)
+## א. טבלת הבדיקה של מטלה 4 (מול הדומיין האמיתי)
 
-| # | נושא | בדיקה | מצב | איך משלימים |
-|---|---|---|---|---|
-| 1 | דומיין ו-HTTPS | `https://DOMAIN` עם תעודה תקינה, ו-`http://` ← 301 | ⚠️ ממתין לפריסה ולתעודה | `deploy\deploy.ps1` ← No-IP ← `deploy\status.ps1 -Wait` ← `deploy\verify.ps1` |
-| 2 | השרת | `https://DOMAIN/health` ← 200 `{"status":"ok"}` | ⚠️ ממתין (מקומית ✅: 200 ישירות וגם דרך nginx) | `deploy\verify.ps1` |
-| 3 | האתר | E2E מלא מול הדומיין | ⚠️ ממתין (מקומית ✅, ראו ב') | `deploy\verify.ps1` (מריץ Playwright עם `BASE_URL=https://DOMAIN`) |
-| 4 | נתונים נשמרים + 20 בקשות עם אותו טוקן | `cloud.spec.js` | ⚠️ ממתין (מקומית ✅: 20/20 החזירו 200, הנתונים נשמרו אחרי רענון, התנתקות והתחברות) | `deploy\verify.ps1` |
-| 5 | זמינות | Uptime check ירוק, min-instances 2/1 | ⚠️ ממתין | `deploy\verify.ps1` + Console ← Monitoring ← Uptime checks |
-| + | בידוד | `*.run.app` ← 403/404 מבחוץ | ⚠️ ממתין | `deploy\verify.ps1` |
-| + | סודות | סריקת `git grep` | ✅ נקייה לפני כל commit, וגם בסוף | |
-| + | סודות | `.env` לא בתמונות | ✅ `.dockerignore` בשתי התיקיות מוציא `.env` ו-`*.env` | |
+| # | נושא | בדיקה | תוצאה |
+|---|---|---|---|
+| 1 | דומיין ו-HTTPS | `https://rewind.ddns.net` | ✅ 200. התעודה המנוהלת ACTIVE ונבדקה על ידי Windows (`curl` בלי `-k`) |
+| 1 | הפניה | `http://rewind.ddns.net/history` | ✅ `301` ← `https://rewind.ddns.net:443/history`. ה-LB של Google כותב `:443` ב-Location, וזו אותה כתובת |
+| 1 | HSTS | כותרת התשובה | ✅ `strict-transport-security: max-age=31536000` |
+| 2 | השרת | `https://rewind.ddns.net/health` | ✅ `{"status":"ok"}` 200. כלומר השרת מחובר ל-Atlas |
+| 3 | האתר (E2E, Playwright, מצלמה מזויפת עם סרטון פנים) | הרשמה (כולל אימייל קיים וסיסמה קצרה), התחברות (כולל סיסמה שגויה), שם תצוגה, הוספת YouTube, סשן עם מצלמה וציון, היסטוריה עם ממוצע, משתמשת שנייה רואה "לא נמצא", התנתקות, טקסט מודבק, מחיקה, קישור שגוי, מעבר שני, אין פנים, דילוג על מצלמה, חוב על אין פנים | ✅ **13/13** מול `https://rewind.ddns.net` |
+| 4 | נתונים נשמרים | תוכן וסשן נשמרים אחרי רענון, התנתקות והתחברות מחדש | ✅ (`cloud.spec.js`) |
+| 4 | שני מופעים, אותו סוד ואותו מסד | 20 × `GET /api/users/me` עם אותו טוקן | ✅ 20/20 החזירו `200` |
+| 5 | זמינות | min-instances, ו-Uptime check על `/health` כל 5 דקות | ✅ backend min=2, frontend min=1. `rewind-health` קיים, עם התראה במייל אחרי 10 דקות כישלון |
+| + | בידוד | כתובות `*.run.app` הישירות מבחוץ | ✅ שתיהן מחזירות 404 (ingress = LB בלבד) |
+| + | סודות | סריקת `git grep` | ✅ נקייה |
+| + | סודות | משתני הסביבה של השרת | ✅ `MONGODB_URI` ו-`JWT_SECRET` הם `secretKeyRef` (Reference a secret), לא ערכים |
+| + | סודות | תמונות | ✅ אין `.env` בתמונות (`find / -name .env` בשתיהן ריק) |
 
-## ב. מה כן נבדק (מקומית), עם תוצאות
+## ב. מטלה 3 (אותו קוד, tag 1.1.0)
 
-| בדיקה | איך | תוצאה |
-|---|---|---|
-| pytest | `scripts/run_tests.sh` (מונגו אמיתי ב-Docker) | **77 עברו**: 72 קיימות + 5 חדשות (production בלי `JWT_SECRET` לא עולה; development עולה; `/api/docs` ב-production; `/docs` מקומית; מגבלת ניסיונות לפי אימייל מ-20 IP) |
-| Vitest | `npx vitest run` | **52 עברו** |
-| בדיקת מודל | `node scripts/check_model.mjs` | 3 פלטים, OK |
-| מטלה 3 לא נשברה (compose dev) | `docker compose -f docker-compose.dev.yml up --build` | האתר 200; `/health` דרך nginx 200; `/api` מגיע לשרת (401); בלי HSTS ב-http. E2E: grading, noface, secondpass, debugpanel: **11/11** |
-| מטלה 3 מתיקייה ריקה | רק 3 הקבצים מ-`assignment3.zip` (tag `1.1.0`, תמונות מקומיות בשם `rewindlocal`) | `/health` 200, האתר 200, `/health` דרך nginx 200. E2E grading + cloud: **6/6** |
-| הלקוח כמו ב-Cloud Run | `docker run -e PORT=8080 -e BACKEND_URL= rewind-frontend` | nginx עלה והאתר 200 על 8080. בלוג: "no /api proxy". HSTS נשלח רק עם `X-Forwarded-Proto: https` |
-| השרת ב-production בלי סוד | `docker run -e ENV=production -e JWT_SECRET= rewind-backend` | `FATAL: JWT_SECRET is required when ENV=production ...`, והשרת לא עלה |
-| אין `localhost:8000` בקוד הבנוי | `grep -r localhost:8000 dist/` | 0 |
-| 20 בקשות עם אותו טוקן + שמירת נתונים | `e2e/tests/cloud.spec.js` מול localhost:3000 | 2/2 (`200` ×20) |
-| סקריפטי הפריסה | PowerShell parser על כל ה-`.ps1`, ו-`deploy.ps1 -DryRun` / `redeploy.ps1 -DryRun` עם config לדוגמה | כל הסקריפטים עוברים parse. ה-DryRun מדפיס את כל רצף הפקודות. הדגלים נבדקו מול `--help` של gcloud 594 ו-atlascli 1.59. נמצאו ותוקנו 3 באגים (DECISIONS D-063) |
-| `deploy.ps1` עם placeholders | ריצה על `config.ps1` האמיתי | נעצר בהודעה: `fill $GCP_PROJECT_ID, $DOMAIN first` |
-| קובץ ההגשה | `deploy\make-submission.ps1` | JSON תקין, שם הקובץ = `project`. מסומן שעדיין יש `TODO_USER` (domain, members) |
+| בדיקה | תוצאה |
+|---|---|
+| Docker Hub | ✅ `naamalaufer/rewind-backend:1.1.0` ו-`naamalaufer/rewind-frontend:1.1.0` ציבוריות: `docker pull` בלי התחברות עובד, וה-manifest מחזיר 200 עם טוקן אנונימי |
+| `assignment3.zip` מתיקייה ריקה | ✅ 3 קבצים בלבד, התמונות נמשכו מ-Docker Hub, `/health` 200, האתר 200. E2E grading + cloud: **6/6** |
+| compose dev | ✅ האתר, `/api` דרך nginx ו-`/health`. E2E: 11/11 |
 
-## ג. מה לא נבדק, בכנות
-- **שום דבר בענן:** אין פרויקט GCP מחובר, אין cluster ב-Atlas, ואין דומיין.
-- **התמונות `1.1.0` עוד לא ב-Docker Hub:** אין `docker login` ואין `DOCKERHUB_USER`. הבדיקה מתיקייה ריקה רצה עם תמונות מקומיות בשם `rewindlocal/...:1.1.0`.
-- **ההתנהגות של `X-Forwarded-For` מאחורי ה-LB האמיתי** לא נבדקה. לכן הוספנו את המגבלה לפי אימייל, שלא תלויה בה (D-054).
-- `alert.ps1` (התראת מייל) לא הורץ, כי `$ALERT_EMAIL` ריק.
+## ג. בדיקות קוד
 
-אחרי `deploy\verify.ps1`, התוצאות האמיתיות יופיעו ב-[A4_VERIFY_RESULTS.md](A4_VERIFY_RESULTS.md).
+| בדיקה | תוצאה |
+|---|---|
+| pytest (מונגו אמיתי) | **77 עברו**, מתוכן 5 חדשות למטלה 4 |
+| Vitest | **52 עברו** |
+| בדיקת מודל | 3 פלטים, OK |
+| הלקוח כמו ב-Cloud Run (`PORT=8080`, `BACKEND_URL=`) | ✅ nginx עלה בלי backend |
+| השרת ב-production בלי `JWT_SECRET` | ✅ מסרב לעלות, עם הודעה ברורה |
+
+## ד. תקלות שנמצאו בפריסה האמיתית, ותוקנו
+1. **`MONGODB_URI` לא תקין בגרסה הראשונה** (D-065): פלט של Atlas CLI נכנס לערך, והשרת לא עלה (`InvalidURI`). תוקן בסקריפט עם `Out-Host`, ולידציה ותיקון עצמי. הסוד נוצר מחדש עם סיסמה חדשה, וגרסה 1 **מושבתת**.
+2. **התראת מייל:** gcloud ה-portable לא יכול להתקין את רכיב ה-beta, ולכן ערוץ ההתראה נוצר דרך ה-REST API (D-066).
+3. **`verify.ps1` ב-PowerShell 5.1:**
+   - `curl` הוא alias של `Invoke-WebRequest`, ולכן הפונקציה `Curl` לא נקראה. שינינו ל-`Invoke-Curl`.
+   - `Invoke-WebRequest` לא מפעיל TLS 1.2 כברירת מחדל. הוספנו את זה ב-`common.ps1`.
+   - `npx` לא מצא את Playwright, כי `Push-Location` לא משנה את תיקיית העבודה של התהליך. עכשיו Playwright רץ לפי נתיב.
+   - Schannel נכשל בבדיקת CRL. נוסף `--ssl-no-revoke` (שרשרת התעודה והשם עדיין נבדקים).
+4. **ההפניה כוללת `:443`:** הבדיקה מקבלת את שתי הצורות.
+
+## ה. מה לא נבדק
+- מצלמה **אמיתית** מול הדומיין: נבדק רק עם מצלמה מזויפת. צריך לבדוק מהדפדפן שלך ומהטלפון.
+- "זמין לאורך כל חלון הבדיקה": תלוי בזמן. ה-Uptime check וההתראה במייל מכסים את זה, וצריך לאשר את ה-hostname ב-No-IP כל 30 יום.
