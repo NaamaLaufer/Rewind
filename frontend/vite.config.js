@@ -9,5 +9,7 @@ export default defineConfig({
     proxy: { "/api": process.env.VITE_DEV_BACKEND ?? "http://localhost:8000" },
   },
   build: { chunkSizeWarningLimit: 2000 },
+  // onnxruntime-web locates its wasm files relative to its own module; pre-bundling breaks that.
+  optimizeDeps: { exclude: ["onnxruntime-web"] },
   test: { environment: "node", include: ["src/**/*.test.js"] },
 });

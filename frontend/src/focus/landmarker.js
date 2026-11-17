@@ -10,8 +10,13 @@ async function create() {
     baseOptions: { modelAssetPath: "/mediapipe/face_landmarker.task", delegate },
     runningMode: "VIDEO",
     numFaces: 1,
-    outputFaceBlendshapes: false,
+    outputFaceBlendshapes: false, // not needed
     outputFacialTransformationMatrixes: false,
+    // Defaults are 0.5. Real webcams (dim light, glasses, wide angle) often score 0.3-0.5 on a
+    // perfectly visible face, which would show "no face" although the preview shows one.
+    minFaceDetectionConfidence: 0.3,
+    minFacePresenceConfidence: 0.3,
+    minTrackingConfidence: 0.3,
   });
   // CPU (wasm + XNNPACK) by default: predictable speed on every machine. GPU via WebGL is faster
   // on a real GPU but very slow on machines without one (software WebGL). If the preferred

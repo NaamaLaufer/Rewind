@@ -3,7 +3,10 @@ import * as ort from "onnxruntime-web/wasm";
 import { LANDMARKS, MODEL_URL, WINDOW } from "./config.js";
 import { argmax, clamp01, softmax } from "./modelMath.js";
 
-ort.env.wasm.wasmPaths = "/ort/"; // served by our own nginx
+// Production: the wasm runtime is served by our own nginx from /ort/.
+// Dev server: Vite refuses to import() a .mjs from public/ (500), so let ORT resolve its own files
+// from node_modules through Vite instead.
+if (import.meta.env.PROD) ort.env.wasm.wasmPaths = "/ort/";
 ort.env.wasm.numThreads = 1; // no SharedArrayBuffer -> no cross-origin isolation needed
 
 let promise = null;

@@ -14,7 +14,7 @@ import YouTubePlayer from "../components/YouTubePlayer.jsx";
 import { cameraErrorMessage, openCamera, stopStream } from "../focus/camera.js";
 import { computeMissedSegments, totalDebt } from "../focus/liveDebt.js";
 import { initialAlertState, returnPoint, stepAlert } from "../focus/smoothing.js";
-import { useFocusEngine } from "../focus/useFocusEngine.js";
+import { preloadFocusEngine, useFocusEngine } from "../focus/useFocusEngine.js";
 import { formatDebt, formatScore, formatSegment, TYPE_LABELS } from "../utils/format.js";
 import NotFound from "./NotFound.jsx";
 
@@ -168,6 +168,11 @@ export default function ContentView() {
   }, [getPosition, postReading]);
 
   const engine = useFocusEngine({ videoRef, enabled: phase === "active" && cam.status === "on", onScore });
+
+  // Warm up MediaPipe + the model as soon as a session starts (the user is reading the consent card).
+  useEffect(() => {
+    if (phase === "active") preloadFocusEngine();
+  }, [phase]);
 
   // Gray "no face" marks on the tape, one every 2s while no face is detected.
   useEffect(() => {
@@ -473,7 +478,7 @@ export default function ContentView() {
                   {engine.paused && <div className="msg msg-info" role="status">המדידה מושהית כשהלשונית לא פעילה.</div>}
                   {engine.status === "loading" && <div className="msg msg-info" role="status">טוענת את מודל הריכוז (פעם ראשונה עשויה לקחת כמה שניות)...</div>}
                   {engine.status === "error" && <div className="msg msg-error" role="alert">{engine.error}</div>}
-                  <ScoreCard score={engine.score} smoothed={engine.smoothed} modelLevel={engine.level}
+                  {engine.detectError && <div className="msg msg-error" role="alert" data-testid="detect-error">{engine.detectError}</div>}                  <ScoreCard score={engine.score} smoothed={engine.smoothed} modelLevel={engine.level}
                     framesFilled={engine.framesFilled} noFace={engine.noFace} fps={engine.fps} detectMs={engine.detectMs} />
                 </>
               )}
