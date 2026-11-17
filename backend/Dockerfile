@@ -15,9 +15,13 @@ COPY app ./app
 RUN useradd --create-home --uid 10001 appuser
 USER appuser
 
+# Cloud Run sets PORT (we deploy with --port 8000); docker compose leaves the default 8000.
+ENV PORT=8000
 EXPOSE 8000
 
 HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=5 \
-  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status == 200 else 1)"
+  CMD python -c "import os,urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('PORT','8000'), timeout=4).status == 200 else 1)"
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# --proxy-headers: behind the Google load balancer, take the client IP and scheme from
+# X-Forwarded-For / X-Forwarded-Proto (Cloud Run only accepts traffic from the LB: ingress).
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips='*'"]

@@ -54,6 +54,7 @@ async def _ensure_indexes(db):
     await db.readings.create_index([("owner_id", ASCENDING)])
     await db.revoked_tokens.create_index("jti")
     await db.login_attempts.create_index("key")
+    await db.login_attempts.create_index("email")
     # TTL: revoked tokens vanish once they would have expired anyway.
     await db.revoked_tokens.create_index("expires_at", expireAfterSeconds=0)
     # TTL: login attempts expire after the rate-limit window.
