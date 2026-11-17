@@ -52,7 +52,7 @@ export default function History() {
                 <div className="stat"><div className="v">{Math.round(overview.total_minutes)}</div><div className="k">דקות למידה</div></div>
                 <div className="stat"><div className="v" style={{ color: scoreColor(overview.average_score) }}>{formatScore(overview.average_score)}</div><div className="k">ממוצע כללי</div></div>
                 <div className="stat">
-                  <div className="v" style={{ color: "var(--coral-ink)", fontSize: "1.25rem" }}>
+                  <div className="v" style={{ color: overview.debt_seconds_total > 0 || overview.debt_paragraphs_total > 0 ? "var(--coral-ink)" : "var(--mint-ink)", fontSize: "1.25rem" }}>
                     {overview.debt_seconds_total > 0 || overview.debt_paragraphs_total > 0
                       ? [overview.debt_seconds_total > 0 && formatDebt(overview.debt_seconds_total, "seconds"),
                          overview.debt_paragraphs_total > 0 && formatDebt(overview.debt_paragraphs_total, "paragraphs")].filter(Boolean).join(" + ")

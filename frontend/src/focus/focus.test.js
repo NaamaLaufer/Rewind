@@ -94,6 +94,8 @@ describe("levels and formatting", () => {
     expect(levelFromScore(0.05)).toBe(0);
     expect(levelFromScore(0.3)).toBe(1);
     expect(levelFromScore(0.5)).toBe(2);
+    expect(levelFromScore(0.65)).toBe(2);
+    expect(levelFromScore(0.6997)).toBe(3); // shown as 0.70 -> same word as the mint color
     expect(levelFromScore(0.7)).toBe(3);
     expect(levelFromScore(0.95)).toBe(4);
   });

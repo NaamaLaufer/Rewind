@@ -8,3 +8,14 @@ export const LANDMARKS = 478;
 export const INFER_EVERY_MS = 2000; // run the model every 2 seconds
 export const NO_FACE_TICKS = 10; // look at the last 10 ticks (~1 s)
 export const NO_FACE_MIN = 7; // >= 7 of them without a face -> "no face"
+
+// MediaPipe delegate. "?delegate=GPU" in the page URL overrides it (for experiments).
+export function preferredDelegate() {
+  try {
+    const d = new URLSearchParams(window.location.search).get("delegate");
+    if (d === "GPU" || d === "CPU") return d;
+  } catch {
+    /* not in a browser */
+  }
+  return "CPU";
+}

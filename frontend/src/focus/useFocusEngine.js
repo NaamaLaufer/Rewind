@@ -22,6 +22,8 @@ const initial = {
   smoothed: null,
   level: null,
   attentionPeak: null,
+  fps: null,
+  detectMs: null,
 };
 
 export function useFocusEngine({ videoRef, enabled, onScore }) {
@@ -46,16 +48,24 @@ export function useFocusEngine({ videoRef, enabled, onScore }) {
     let smoothed = null;
 
     const patch = (p) => !cancelled && setState((s) => ({ ...s, ...p }));
+    // Diagnostics: real frames/second and ms per detection over the last ~2 seconds.
+    const stamps = [];
+    let detectMsAvg = null;
 
     function tick(landmarker) {
       const video = videoRef.current;
       if (document.hidden || !video || video.readyState < 2 || video.videoWidth === 0) return;
       let result;
+      const t0 = performance.now();
       try {
-        result = landmarker.detectForVideo(video, performance.now());
+        result = landmarker.detectForVideo(video, t0);
       } catch {
         return;
       }
+      const t1 = performance.now();
+      detectMsAvg = detectMsAvg === null ? t1 - t0 : 0.9 * detectMsAvg + 0.1 * (t1 - t0);
+      stamps.push(t1);
+      while (stamps.length && t1 - stamps[0] > 2000) stamps.shift();
       const face = result?.faceLandmarks?.[0];
       const hasFace = !!face && face.length >= LANDMARKS;
       history.push(hasFace);
@@ -83,7 +93,13 @@ export function useFocusEngine({ videoRef, enabled, onScore }) {
       }
     }
 
+    const diag = () => ({
+      fps: Math.round((stamps.length / 2) * 10) / 10,
+      detectMs: detectMsAvg === null ? null : Math.round(detectMsAvg),
+    });
+
     async function infer() {
+      if (filled < WINDOW) patch(diag()); // keep diagnostics fresh while the window fills
       if (busy || filled < WINDOW || noFace || document.hidden) return;
       busy = true;
       try {
@@ -91,7 +107,7 @@ export function useFocusEngine({ videoRef, enabled, onScore }) {
         const r = await runModel(frames);
         if (cancelled) return;
         smoothed = ema(smoothed, r.score);
-        patch({ score: r.score, smoothed, level: r.level, attentionPeak: r.attentionPeak });
+        patch({ score: r.score, smoothed, level: r.level, attentionPeak: r.attentionPeak, ...diag() });
         onScoreRef.current?.({ ...r, smoothed });
       } catch (e) {
         console.error("inference failed", e);

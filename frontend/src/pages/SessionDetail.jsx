@@ -29,7 +29,14 @@ export default function SessionDetail() {
   const unit = s.debt_unit;
   const isText = unit === "paragraphs";
   const posLabel = (p) => (isText ? `פסקה ${Math.floor(p) + 1}` : mmss(p));
-  const chart = s.readings.map((r, i) => ({ i: i + 1, pos: posLabel(r.position), score: r.score, smoothed: r.smoothed }));
+  // X axis = time since the session started (always increases, even if the video was paused).
+  const t0 = new Date(s.started_at).getTime();
+  const chart = s.readings.map((r) => ({
+    t: mmss((new Date(r.created_at).getTime() - t0) / 1000),
+    pos: posLabel(r.position),
+    score: r.score,
+    smoothed: r.smoothed,
+  }));
   const openSegs = s.missed_segments.filter((x) => !x.closed);
 
   // "What the model saw": where inside each 10-second window the most influential frame was.
@@ -51,7 +58,7 @@ export default function SessionDetail() {
         <div className="stat"><div className="v">{s.reading_count}</div><div className="k">מדידות</div></div>
         <div className="stat"><div className="v">{s.ended_at ? formatDuration(s.started_at, s.ended_at) : "פתוח"}</div><div className="k">משך</div></div>
         <div className="stat">
-          <div className="v" style={{ color: "var(--coral-ink)", fontSize: "1.25rem" }}>
+          <div className="v" style={{ color: s.mode === "watch" && s.debt_seconds > 0 ? "var(--coral-ink)" : "var(--mint-ink)", fontSize: "1.25rem" }}>
             {s.mode === "review" ? `${s.segments_closed ?? 0}/${s.segments_total ?? 0} נסגרו` : formatDebt(s.debt_seconds, unit)}
           </div>
           <div className="k">{s.mode === "review" ? "קטעים במעבר השני" : "חוב קשב פתוח"}</div>
@@ -80,14 +87,17 @@ export default function SessionDetail() {
           <p className="muted">אין מדידות בסשן הזה (המצלמה לא הופעלה או שלא זוהו פנים).</p>
         ) : (
           <>
-            <p className="small muted">ציון גולמי (מהמודל) וציון מוחלק (EMA). מתחת לקו המקווקו (0.4) נחשב קשב נמוך.</p>
+            <p className="small muted">
+              ציון גולמי (מהמודל) וציון מוחלק (EMA) לאורך הסשן. ציר הזמן מתחיל בתחילת הסשן. מתחת לקו המקווקו (0.4) נחשב קשב נמוך.
+            </p>
             <div className="chart-box" style={{ height: 300 }}>
               <ResponsiveContainer>
                 <LineChart data={chart} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e5ded2" />
-                  <XAxis dataKey="pos" fontSize={12} />
+                  <XAxis dataKey="t" fontSize={12} />
                   <YAxis domain={[0, 1]} fontSize={12} />
-                  <Tooltip formatter={(v, n) => [formatScore(v), n === "score" ? "ציון" : "מוחלק"]} />
+                  <Tooltip formatter={(v, n) => [formatScore(v), n === "score" ? "ציון" : "מוחלק"]}
+                    labelFormatter={(l, p) => `${l} בסשן · ${p?.[0]?.payload?.pos ?? ""} בתוכן`} />
                   <Legend formatter={(v) => (v === "score" ? "ציון גולמי" : "ציון מוחלק")} />
                   <ReferenceLine y={0.4} stroke="#e0584b" strokeDasharray="4 4" />
                   <Line type="monotone" dataKey="score" stroke="#9aa3b5" strokeWidth={1.5} dot={false} />

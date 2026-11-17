@@ -3,13 +3,15 @@ import { formatScore, scoreColor } from "../utils/format.js";
 import { LEVEL_LABELS, levelFromScore } from "../utils/levels.js";
 
 /** The main, most prominent element: the latest raw score as a big number + label + color bar. */
-export default function ScoreCard({ score, smoothed, modelLevel, framesFilled, noFace }) {
+export default function ScoreCard({ score, smoothed, modelLevel, framesFilled, noFace, fps, detectMs }) {
   const waiting = score === null || score === undefined;
-  const secondsLeft = Math.max(0, Math.ceil((WINDOW - framesFilled) / 10));
+  // Estimate with the real measured frame rate (slow machines fill the window more slowly).
+  const rate = fps && fps > 0.5 ? Math.min(10, fps) : 10;
+  const secondsLeft = Math.max(0, Math.ceil((WINDOW - framesFilled) / rate));
   const level = levelFromScore(score);
 
   return (
-    <section className="card score-card" aria-labelledby="score-title">
+    <section className="card score-card" aria-labelledby="score-title" data-fps={fps ?? ""} data-detect-ms={detectMs ?? ""}>
       <h2 id="score-title">ציון הריכוז שלך</h2>
       {waiting ? (
         <div aria-live="polite">
