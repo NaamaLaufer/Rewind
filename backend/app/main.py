@@ -23,8 +23,13 @@ async def lifespan(app: FastAPI):
     await db.disconnect()
 
 
-app = FastAPI(title="Rewind API", version="1.0.0", lifespan=lifespan,
-              description="Rewind - לא מפספסים אף רגע. Attention-debt learning site.")
+# In the cloud the load balancer sends only /api/* and /health to this service, so the interactive
+# docs live under /api/docs there. Locally (docker compose) they stay at :8000/docs.
+_docs_prefix = "/api" if settings.is_production else ""
+app = FastAPI(title="Rewind API", version="1.1.0", lifespan=lifespan,
+              description="Rewind - לא מפספסים אף רגע. Attention-debt learning site.",
+              docs_url=f"{_docs_prefix}/docs", redoc_url=None,
+              openapi_url=f"{_docs_prefix}/openapi.json")
 
 app.add_middleware(
     CORSMiddleware,

@@ -422,3 +422,19 @@ async def test_low_flag_reading_creates_debt_above_040(client):
                                 "looking_away": low})
     end = (await client.post(f"/api/sessions/{s['id']}/end", headers=h)).json()
     assert [(x["start"], x["end"]) for x in end["missed_segments"]] == [(12.0, 24.0)]
+
+
+async def test_login_rate_limit_per_email_across_ips(client):
+    # A client can forge X-Forwarded-For, so 20 failures for one e-mail from 20 "different IPs"
+    # must still block it (A4: rate limit behind the load balancer).
+    from app.rate_limit import record_attempt
+
+    await register(client)
+    for i in range(20):
+        await record_attempt("a@example.com", f"10.0.0.{i}")
+    r = await client.post("/api/auth/login", json={"email": "a@example.com", "password": "secret123"})
+    assert r.status_code == 429
+    # another e-mail is not affected
+    await register(client, email="b@example.com", name="Bob")
+    r = await client.post("/api/auth/login", json={"email": "b@example.com", "password": "secret123"})
+    assert r.status_code == 200

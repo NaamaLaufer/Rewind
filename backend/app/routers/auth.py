@@ -38,6 +38,8 @@ async def register(body: RegisterIn):
 async def login(body: LoginIn, request: Request):
     db = get_db()
     email = body.email.strip().lower()
+    # Behind the load balancer uvicorn runs with --proxy-headers, so this is the client IP from
+    # X-Forwarded-For, not the LB's. (Forgeable, hence the extra per-email limit in rate_limit.py.)
     ip = request.client.host if request.client else "unknown"
 
     if await too_many_attempts(email, ip):
