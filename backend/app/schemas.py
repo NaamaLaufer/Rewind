@@ -15,7 +15,7 @@ def _validate_password(v: str) -> str:
         raise ValueError("הסיסמה חייבת להכיל לפחות 8 תווים")
     if len(v) > _PW_MAX:
         raise ValueError("הסיסמה ארוכה מדי (עד 128 תווים)")
-    if not re.search(r"[A-Za-z]", v):
+    if not any(c.isalpha() for c in v):  # any letter, Hebrew included
         raise ValueError("הסיסמה חייבת להכיל לפחות אות אחת")
     if not re.search(r"\d", v):
         raise ValueError("הסיסמה חייבת להכיל לפחות ספרה אחת")

@@ -17,7 +17,7 @@ from ..utils import not_found, parse_oid
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
-MODEL_VERSION = "v4_2"
+MODEL_VERSION = "v4_7"
 STALE_AFTER = timedelta(hours=2)  # open session with no reading for 2h is closed lazily
 
 
