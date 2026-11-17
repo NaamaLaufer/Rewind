@@ -34,3 +34,16 @@ export async function apiToken(request, email, name) {
   const r = await request.post("/api/auth/login", { data: { email, password: PASSWORD } });
   return (await r.json()).access_token;
 }
+
+/** Register, add a YouTube item, open it (optionally with a query like "?debug=1"), start a session
+ *  and turn the camera on. */
+export async function openSessionWithCamera(page, tag, query = "") {
+  await registerAndLogin(page, tag, "דיבאג");
+  await page.getByLabel("כותרת").fill("סרטון");
+  await page.getByLabel("קישור לסרטון YouTube").fill(YT_URL);
+  await page.getByRole("button", { name: "הוספה לספרייה" }).click();
+  await page.getByRole("link", { name: "פתיחה" }).first().click();
+  if (query) await page.goto(page.url() + query);
+  await page.getByRole("button", { name: /התחלת סשן/ }).click();
+  await page.getByRole("button", { name: /הפעלת מצלמה/ }).click();
+}

@@ -3,6 +3,10 @@ import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
 import { preferredDelegate } from "./config.js";
 
 let promise = null;
+let usedDelegate = null;
+
+/** Which delegate actually initialized ("CPU" / "GPU"), for the debug panel. */
+export const landmarkerDelegate = () => usedDelegate;
 
 async function create() {
   const fileset = await FilesetResolver.forVisionTasks("/mediapipe/wasm");
@@ -24,10 +28,14 @@ async function create() {
   const first = preferredDelegate();
   const second = first === "CPU" ? "GPU" : "CPU";
   try {
-    return await FaceLandmarker.createFromOptions(fileset, options(first));
+    const lm = await FaceLandmarker.createFromOptions(fileset, options(first));
+    usedDelegate = first;
+    return lm;
   } catch (e) {
     console.warn(`FaceLandmarker ${first} delegate failed, falling back to ${second}`, e);
-    return FaceLandmarker.createFromOptions(fileset, options(second));
+    const lm = await FaceLandmarker.createFromOptions(fileset, options(second));
+    usedDelegate = second;
+    return lm;
   }
 }
 

@@ -280,3 +280,8 @@ table.data tr:hover td { background: #faf8f4; }
   table.data.responsive td::before { content: attr(data-label); color: var(--muted); font-weight: 500; }
   .btn { min-height: 44px; }
 }
+
+/* ?debug=1 diagnostic panel */
+.debug-panel { border: 2px dashed var(--amber); margin-top: 16px; }
+.debug-panel table.data th { width: 45%; font-weight: 500; background: transparent; }
+.debug-panel table.data td, .debug-panel table.data th { padding: 5px 8px; }

@@ -19,3 +19,18 @@ export function preferredDelegate() {
   }
   return "CPU";
 }
+
+const param = (name) => {
+  try {
+    return new URLSearchParams(window.location.search).get(name);
+  } catch {
+    return null;
+  }
+};
+
+/** "?debug=1" in the page URL shows the camera/face debug panel. */
+export const debugEnabled = () => param("debug") === "1";
+
+/** "?input=canvas" feeds MediaPipe a 2D-canvas copy of the frame instead of the <video> element
+ *  (diagnostic: rules out video->texture upload problems on some GPUs/drivers). */
+export const inputMode = () => (param("input") === "canvas" ? "canvas" : "video");

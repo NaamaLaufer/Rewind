@@ -4,6 +4,7 @@ import { api } from "../api/client.js";
 import AlertBanner from "../components/AlertBanner.jsx";
 import BreakDialog from "../components/BreakDialog.jsx";
 import ConsentPanel from "../components/ConsentPanel.jsx";
+import DebugPanel from "../components/DebugPanel.jsx";
 import DebtMeter from "../components/DebtMeter.jsx";
 import FocusTape from "../components/FocusTape.jsx";
 import QuestionDialog from "../components/QuestionDialog.jsx";
@@ -12,6 +13,7 @@ import ScoreCard from "../components/ScoreCard.jsx";
 import Spinner from "../components/Spinner.jsx";
 import YouTubePlayer from "../components/YouTubePlayer.jsx";
 import { cameraErrorMessage, openCamera, stopStream } from "../focus/camera.js";
+import { debugEnabled } from "../focus/config.js";
 import { computeMissedSegments, totalDebt } from "../focus/liveDebt.js";
 import { initialAlertState, returnPoint, stepAlert } from "../focus/smoothing.js";
 import { preloadFocusEngine, useFocusEngine } from "../focus/useFocusEngine.js";
@@ -215,7 +217,11 @@ export default function ContentView() {
       setSession({ ...s, debt_unit_hint: unit });
       setPhase("active");
       setCam((c) => (c.status === "on" ? c : { status: "consent", error: null }));
-      if (params.get("review")) setParams({}, { replace: true });
+      if (params.get("review")) {
+        const rest = new URLSearchParams(params);
+        rest.delete("review");
+        setParams(rest, { replace: true });
+      }
     } catch (e) {
       setActionError(e.message);
     } finally {
@@ -503,6 +509,8 @@ export default function ContentView() {
               ) : (
                 <DebtMeter value={liveDebt} unit={unit} />
               )}
+
+              {debugEnabled() && <DebugPanel engine={engine} cam={cam} stream={streamRef.current} />}
 
               <button type="button" className="btn btn-danger btn-lg btn-block" style={{ marginTop: 16 }} disabled={busy} onClick={endSession}>
                 ⏹ {busy ? "שומרת..." : isReview ? "סיום מעבר שני" : "סיום סשן"}

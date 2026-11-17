@@ -10,8 +10,9 @@
 // - strictly increasing timestamps for detectForVideo (shared by every caller of the singleton);
 // - an exception from detectForVideo is an ERROR (logged + shown), never counted as "no face".
 import { useEffect, useRef, useState } from "react";
-import { FPS, INFER_EVERY_MS, LANDMARKS, NO_FACE_MIN, NO_FACE_TICKS, WINDOW } from "./config.js";
-import { getLandmarker } from "./landmarker.js";
+import { debugEnabled, FPS, INFER_EVERY_MS, inputMode, LANDMARKS, NO_FACE_MIN, NO_FACE_TICKS, WINDOW } from "./config.js";
+import { getFaceDetector } from "./faceDetector.js";
+import { getLandmarker, landmarkerDelegate } from "./landmarker.js";
 import { loadModel, runModel } from "./model.js";
 import { unrollRing } from "./modelMath.js";
 import { ema } from "./smoothing.js";
@@ -42,6 +43,7 @@ const initial = {
   attentionPeak: null,
   fps: null,
   detectMs: null,
+  debug: null, // only filled with ?debug=1
 };
 
 /** Start downloading/initializing MediaPipe + the ONNX model early (e.g. while the consent card
@@ -74,12 +76,32 @@ export function useFocusEngine({ videoRef, enabled, onScore }) {
     let smoothed = null;
     let errorShown = false;
 
+    // ---- ?debug=1 diagnostics (see DebugPanel) ----
+    const debugOn = debugEnabled();
+    const mode = inputMode();
+    const dbg = { faceStamps: [], landmarkFaces: 0, detectorScore: null, detectorFaces: null,
+      brightness: null, lastError: null, lastErrorAt: null, ticks: 0 };
+    const noteError = (where, e) => {
+      dbg.lastError = `${where}: ${String(e?.message ?? e).slice(0, 160)}`;
+      dbg.lastErrorAt = new Date().toLocaleTimeString("he-IL");
+    };
+    let detector = null;
+    let debugTimer = null;
+    const frameCanvas = mode === "canvas" ? document.createElement("canvas") : null;
+    const small = debugOn ? document.createElement("canvas") : null;
+    if (small) {
+      small.width = 32;
+      small.height = 24;
+    }
+    if (debugOn) getFaceDetector().then((d) => (detector = d)).catch((e) => noteError("FaceDetector load", e));
+
     const alive = () => !cancelled && loopOwner === myToken;
     const patch = (p) => alive() && setState((s) => ({ ...s, ...p }));
     const stop = () => {
       clearInterval(tickTimer);
       clearInterval(inferTimer);
-      tickTimer = inferTimer = null;
+      clearInterval(debugTimer);
+      tickTimer = inferTimer = debugTimer = null;
     };
     // Diagnostics: real frames/second and ms per detection over the last ~2 seconds.
     const stamps = [];
@@ -96,10 +118,21 @@ export function useFocusEngine({ videoRef, enabled, onScore }) {
       let result;
       const t0 = performance.now();
       try {
-        result = landmarker.detectForVideo(video, nextTimestamp());
+        let input = video;
+        if (frameCanvas) {
+          // ?input=canvas: hand MediaPipe a plain 2D-canvas copy of the frame
+          if (frameCanvas.width !== video.videoWidth || frameCanvas.height !== video.videoHeight) {
+            frameCanvas.width = video.videoWidth;
+            frameCanvas.height = video.videoHeight;
+          }
+          frameCanvas.getContext("2d").drawImage(video, 0, 0);
+          input = frameCanvas;
+        }
+        result = landmarker.detectForVideo(input, nextTimestamp());
       } catch (e) {
         // NOT "no face": the detector failed. Log it and show a separate error.
         console.error("FaceLandmarker.detectForVideo failed", e);
+        noteError("detectForVideo", e);
         if (!errorShown) {
           errorShown = true;
           patch({ detectError: "זיהוי הפנים נכשל בדפדפן הזה. נסי לרענן את הדף או לבחור מצלמה אחרת." });
@@ -118,6 +151,12 @@ export function useFocusEngine({ videoRef, enabled, onScore }) {
       const faces = result?.faceLandmarks ?? [];
       const face = faces.length > 0 ? faces[0] : null; // faceLandmarks.length > 0 = a face was found
       const hasFace = !!face && face.length >= LANDMARKS;
+      if (debugOn) {
+        dbg.ticks += 1;
+        dbg.landmarkFaces = faces.length;
+        if (hasFace) dbg.faceStamps.push(t1);
+        while (dbg.faceStamps.length && t1 - dbg.faceStamps[0] > 1000) dbg.faceStamps.shift();
+      }
       history.push(hasFace);
       if (history.length > NO_FACE_TICKS) history.shift();
 
@@ -164,15 +203,71 @@ export function useFocusEngine({ videoRef, enabled, onScore }) {
         onScoreRef.current?.({ ...r, smoothed });
       } catch (e) {
         console.error("inference failed", e);
+        noteError("ONNX model", e);
       } finally {
         busy = false;
       }
+    }
+
+    // Every 500 ms in debug mode: detector confidence, frame brightness, rates -> state.debug
+    function debugTick() {
+      if (!alive()) return;
+      const video = videoRef.current;
+      const now = performance.now();
+      if (video && video.readyState >= 2 && video.videoWidth > 0) {
+        try {
+          const ctx = small.getContext("2d", { willReadFrequently: true });
+          ctx.drawImage(video, 0, 0, small.width, small.height);
+          const px = ctx.getImageData(0, 0, small.width, small.height).data;
+          let sum = 0;
+          for (let i = 0; i < px.length; i += 4) sum += 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+          dbg.brightness = Math.round(sum / (px.length / 4));
+        } catch (e) {
+          noteError("brightness", e);
+        }
+        if (detector) {
+          try {
+            const det = detector.detect(video).detections ?? [];
+            const scores = det.map((d) => d.categories?.[0]?.score ?? 0);
+            dbg.detectorFaces = scores.filter((x) => x >= 0.5).length; // weak candidates are not "faces"
+            dbg.detectorScore = scores.length ? Math.max(...scores) : 0; // best candidate, even if weak
+          } catch (e) {
+            noteError("FaceDetector", e);
+          }
+        }
+      }
+      patch({
+        debug: {
+          framesPerSec: stamps.filter((t) => now - t <= 1000).length,
+          facesPerSec: dbg.faceStamps.filter((t) => now - t <= 1000).length,
+          landmarkFaces: dbg.landmarkFaces,
+          detectorScore: dbg.detectorScore,
+          detectorFaces: dbg.detectorFaces,
+          detectorReady: !!detector,
+          brightness: dbg.brightness,
+          videoSize: video ? `${video.videoWidth}×${video.videoHeight}` : "—",
+          readyState: video?.readyState ?? null,
+          paused: video?.paused ?? null,
+          delegate: landmarkerDelegate(),
+          input: mode,
+          ticks: dbg.ticks,
+          detectMs: detectMsAvg === null ? null : Math.round(detectMsAvg),
+          lastError: dbg.lastError,
+          lastErrorAt: dbg.lastErrorAt,
+        },
+      });
+    }
+    const onWindowError = (ev) => noteError("window", ev?.reason ?? ev?.error ?? ev?.message);
+    if (debugOn) {
+      window.addEventListener("error", onWindowError);
+      window.addEventListener("unhandledrejection", onWindowError);
     }
 
     const onVisibility = () => patch({ paused: document.hidden });
     document.addEventListener("visibilitychange", onVisibility);
 
     setState({ ...initial, status: "loading", paused: document.hidden });
+    if (debugOn) debugTimer = setInterval(debugTick, 500); // runs even while the models load
     Promise.all([getLandmarker(), loadModel()])
       .then(([landmarker]) => {
         if (!alive() || tickTimer) return; // a cleaned-up (StrictMode) effect never starts a loop
@@ -182,6 +277,8 @@ export function useFocusEngine({ videoRef, enabled, onScore }) {
       })
       .catch((e) => {
         console.error(e);
+        noteError("load", e);
+        if (debugOn) debugTick();
         patch({ status: "error", error: "לא הצלחנו לטעון את מודל הריכוז. נסי לרענן את הדף." });
       });
 
@@ -189,6 +286,8 @@ export function useFocusEngine({ videoRef, enabled, onScore }) {
       cancelled = true;
       stop();
       document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("error", onWindowError);
+      window.removeEventListener("unhandledrejection", onWindowError);
     };
   }, [enabled, videoRef]);
 
