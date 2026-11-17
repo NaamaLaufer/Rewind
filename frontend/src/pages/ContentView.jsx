@@ -482,7 +482,7 @@ export default function ContentView() {
             <div className="msg msg-info" role="status">
               <strong>מעבר שני: קטע {Math.min(segIdx + 1, reviewSegs.length)} מתוך {reviewSegs.length}</strong>
               {currentSeg && <> · {formatSegment(currentSeg, unit)}</>}
-              {!reviewRunning && " · מחכה לציון הראשון מהמצלמה לפני שמתחילים (כ-10 שניות)"}
+              {!reviewRunning && " · מחכה לציון הראשון מהמצלמה לפני שמתחילים (כמה שניות)"}
             </div>
           )}
           {isVideo ? (
@@ -583,7 +583,7 @@ export default function ContentView() {
                   {engine.detectError && <div className="msg msg-error" role="alert" data-testid="detect-error">{engine.detectError}</div>}
                   <ScoreCard score={engine.score} smoothed={engine.smoothed} modelLevel={engine.level}
                     framesFilled={engine.framesFilled} noFace={engine.noFace} fps={engine.fps} detectMs={engine.detectMs}
-                    calibration={calView} />
+                    calibration={calView} faceSeen={engine.faceSeen} provisional={engine.provisional} />
                 </>
               )}
               <div className={cam.status === "on" ? "card" : "cam-hidden"} style={cam.status === "on" ? { padding: 12 } : undefined}>

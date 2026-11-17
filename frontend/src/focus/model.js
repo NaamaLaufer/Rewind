@@ -22,12 +22,14 @@ export function loadModel() {
 }
 
 /**
- * Run one window. frames: Float32Array(WINDOW * 478 * 3), chronological, raw MediaPipe x/y/z.
+ * Run one window. frames: Float32Array(length * 478 * 3), chronological, raw MediaPipe x/y/z.
+ * length = WINDOW (100) for real scores; 30 or 60 for the provisional score at the start (D-050):
+ * the model's sequence axis is dynamic ("sequence_length").
  * Outputs are read BY NAME when present, so other model versions (v1-v3: single output) still work.
  */
-export async function runModel(frames) {
+export async function runModel(frames, length = WINDOW) {
   const session = await loadModel();
-  const input = new ort.Tensor("float32", frames, [1, WINDOW, LANDMARKS, 3]);
+  const input = new ort.Tensor("float32", frames, [1, length, LANDMARKS, 3]);
   const out = await session.run({ [session.inputNames[0]]: input });
 
   const reg = out.regression_scores ?? out[session.outputNames[0]];

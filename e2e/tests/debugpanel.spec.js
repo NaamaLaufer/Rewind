@@ -5,7 +5,7 @@ import { openSessionWithCamera } from "./helpers.js";
 
 test("debug panel is hidden without ?debug=1", async ({ page }) => {
   await openSessionWithCamera(page, "nodebug");
-  await expect(page.getByTestId("score-value")).toBeVisible({ timeout: 60_000 });
+  await expect(page.locator('[data-testid="score-value"][data-provisional="false"]')).toBeVisible({ timeout: 60_000 });
   await expect(page.getByTestId("debug-panel")).toHaveCount(0);
 });
 

@@ -6,7 +6,7 @@ import { openSessionWithCamera } from "./helpers.js";
 test("focused face: calibration line, high score, no alert, no look-away", async ({ page }) => {
   test.setTimeout(150_000);
   await openSessionWithCamera(page, "calib", "?debug=1");
-  await expect(page.getByTestId("score-value")).toBeVisible({ timeout: 60_000 });
+  await expect(page.locator('[data-testid="score-value"][data-provisional="false"]')).toBeVisible({ timeout: 60_000 });
   await expect(page.getByTestId("calibration")).toContainText("כיול אישי");
   // 30 s of scores after the first one -> baseline
   await expect(page.getByTestId("calibration")).toContainText(/הרמה הרגילה שלך\s*[01]\.\d\d/, { timeout: 60_000 });

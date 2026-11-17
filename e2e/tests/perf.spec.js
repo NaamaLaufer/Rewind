@@ -23,7 +23,7 @@ for (const delegate of ["CPU", "GPU"]) {
     const ms = await card.getAttribute("data-detect-ms");
     let firstScoreAt = null;
     try {
-      await expect(page.getByTestId("score-value")).toBeVisible({ timeout: 40_000 });
+      await expect(page.locator('[data-testid="score-value"][data-provisional="false"]')).toBeVisible({ timeout: 40_000 });
       firstScoreAt = ((Date.now() - t0) / 1000 + 0).toFixed(1);
     } catch {
       /* report below */

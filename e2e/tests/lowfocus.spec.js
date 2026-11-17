@@ -16,7 +16,7 @@ test("low focus -> alert, debt grows, summary offers a Second Pass", async ({ pa
   await page.getByRole("button", { name: /התחלת סשן/ }).click();
   await page.getByRole("button", { name: /הפעלת מצלמה/ }).click();
 
-  const score = page.getByTestId("score-value");
+  const score = page.locator('[data-testid="score-value"][data-provisional="false"]');
   await expect(score).toBeVisible({ timeout: 45_000 });
   expect(Number(await score.textContent())).toBeLessThan(0.4);
 

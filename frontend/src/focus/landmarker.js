@@ -8,7 +8,7 @@ let usedDelegate = null;
 /** Which delegate actually initialized ("CPU" / "GPU"), for the debug panel. */
 export const landmarkerDelegate = () => usedDelegate;
 
-async function create() {
+async function create(forceDelegate = null) {
   const fileset = await FilesetResolver.forVisionTasks("/mediapipe/wasm");
   const options = (delegate) => ({
     baseOptions: { modelAssetPath: "/mediapipe/face_landmarker.task", delegate },
@@ -25,7 +25,7 @@ async function create() {
   // CPU (wasm + XNNPACK) by default: predictable speed on every machine. GPU via WebGL is faster
   // on a real GPU but very slow on machines without one (software WebGL). If the preferred
   // delegate fails to initialize, fall back to the other one.
-  const first = preferredDelegate();
+  const first = forceDelegate ?? preferredDelegate();
   const second = first === "CPU" ? "GPU" : "CPU";
   try {
     const lm = await FaceLandmarker.createFromOptions(fileset, options(first));
@@ -37,6 +37,27 @@ async function create() {
     usedDelegate = second;
     return lm;
   }
+}
+
+/**
+ * Self-healing (D-049): throw away the current instance and build a new one. Used by the engine's
+ * watchdog (no detection result for 3 s) and after a lost WebGL context (forceCPU=true).
+ */
+export async function resetLandmarker({ forceCPU = false } = {}) {
+  const old = promise;
+  promise = null;
+  if (old) {
+    try {
+      (await old).close();
+    } catch {
+      /* the old instance may already be broken */
+    }
+  }
+  promise = create(forceCPU ? "CPU" : null).catch((e) => {
+    promise = null;
+    throw e;
+  });
+  return promise;
 }
 
 /** Singleton: the first caller starts loading, everyone shares the same instance. */

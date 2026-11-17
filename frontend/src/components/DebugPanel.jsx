@@ -48,6 +48,8 @@ export default function DebugPanel({ engine, cam, stream, calibration, noFaceFor
     ["עיניים (EAR)", d?.ear != null ? `${d.ear}${d.neutral?.ear != null ? ` (רגיל: ${d.neutral.ear})` : ""} · עצומות=${String(d.eyesClosed)}` : "—"],
     ["מסתכלת הצידה", d ? `${String(d.lookingAway)}${d.gazeFor ? ` · כבר ${d.gazeFor} שנ'` : ""} · מעל 4 שנ'=${String(engine.gaze?.sustained ?? false)}` : "—"],
     ["אין פנים ברצף", noFaceFor ? `${noFaceFor} שנ' (מעל 5 = נכנס לחוב)` : "0"],
+    ["תיקון עצמי: הפעלות מחדש", d ? `${d.restarts}${d.lastRestart ? ` (אחרונה ${d.lastRestart})` : ""} · תשובה אחרונה לפני ${d.sinceResult} שנ'` : "—"],
+    ["ציון ראשוני (חלון חלקי)", engine.provisional ? `כן (${engine.framesFilled} פריימים)` : "לא"],
     ["שגיאה אחרונה", d?.lastError ? `${d.lastErrorAt}: ${d.lastError}` : cam.error || engine.error || "אין"],
   ];
   return (
