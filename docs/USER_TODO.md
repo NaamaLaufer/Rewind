@@ -1,69 +1,32 @@
 # מה נשאר לך לעשות
 
-## ⚡ מטלה 4 (ענן): מה צריך ממך עכשיו, לפי הסדר
+## ⚡ מטלה 4 (ענן): מה צריך ממך עכשיו
 
-כל הקוד, הסקריפטים והמסמכים מוכנים ונבדקו מקומית. **שום דבר עוד לא נוצר בענן**, כי בסשן הזה אף אחד מהחשבונות לא היה מחובר, ופרטי הפרויקט (מזהה GCP, דומיין, שמות) היו ריקים. כל השלבים כאן ב-**PowerShell**, מתוך תיקיית הפרויקט.
+### >>> ב-No-IP: לעדכן את `rewind.ddns.net` לרשומת A אחת בלבד עם ה-IP `8.233.237.59` <<<
+No-IP ← Dynamic DNS ← Hostnames ← `rewind.ddns.net` ← Modify ← IPv4 Address: `8.233.237.59` ← Save. **רק** רשומה אחת, בלי AAAA או IP נוסף.
+(ה-IP נשמר גם ב-`deploy\last-ip.txt`.) כרגע ה-hostname מצביע על `1.1.1.1`, וכל עוד זה כך התעודה לא תונפק.
 
-**0. כלים (כבר מותקנים במחשב הזה).** בטרמינל חדש: `. .\deploy\tools-path.ps1`, או לפתוח טרמינל חדש אחרי ההתקנה של winget.
+**מה כבר רץ בענן** (פרויקט `rewind-515021`, europe-west1):
+- Cloud Run: `rewind-backend` (2–5 מופעים) ו-`rewind-frontend` (1–5), נגישים רק דרך ה-LB.
+- Atlas M0 `rewind`, וסודות ב-Secret Manager.
+- LB עם IP סטטי, URL map ו-redirect מ-http, ותעודה מנוהלת (ממתינה ל-DNS).
+- Budget של 200 ILS, Uptime check, והתראה במייל.
 
-**1. למלא את `deploy\config.ps1`** (בלי סודות; הקובץ נכנס ל-Git):
-   - `$GCP_PROJECT_ID`: ה-**ID** של הפרויקט ב-Google Cloud (לא השם).
-   - `$DOMAIN`: ה-hostname מ-No-IP (למשל `rewind-naama.ddns.net`). ב-No-IP: חשבון חינמי ← Create Hostname ← בינתיים כל IP.
-   - `$MEMBERS`: השמות המלאים באנגלית.
-   - אופציונלי: `$DOCKERHUB_USER` (כדי לדחוף את 1.1.0 גם ל-Docker Hub), `$ALERT_EMAIL`.
-
-**2. התחברויות (בדפדפן, פעם אחת):**
+**אחרי העדכון ב-No-IP** (אם אני כבר לא רץ ב-polling):
 ```powershell
-gcloud auth login
-gcloud config set project <GCP_PROJECT_ID>
-atlas auth login        # אם אין, ראו "Atlas בלי CLI" למטה
-docker login            # רק אם מילאת $DOCKERHUB_USER
-gh auth login           # רשות: כדי שה-merge יעבור דרך Pull Requests
+powershell -ExecutionPolicy Bypass -File deploy\status.ps1 -Wait     # עד שהתעודה ACTIVE (עד 60 דק')
+powershell -ExecutionPolicy Bypass -File deploy\verify.ps1           # בדיקה מלאה + E2E מול https://rewind.ddns.net
+powershell -ExecutionPolicy Bypass -File deploy\make-submission.ps1  # submission\rewind.json
 ```
+`FAILED_NOT_VISIBLE` = רשומת ה-A עוד לא `8.233.237.59`. Google מנסה שוב לבד.
 
-**3. להריץ את הפריסה:**
-```powershell
-powershell -ExecutionPolicy Bypass -File deploy\deploy.ps1
-```
-הסקריפט אידמפוטנטי: אם הוא נעצר באמצע, מתקנים ומריצים שוב. הוא ידפיס בגדול את ה-IP הסטטי.
-
-**4. >>> ב-No-IP: לעדכן את ה-hostname לרשומת A אחת בלבד עם ה-IP שהודפס <<<**
-(ה-IP נשמר גם ב-`deploy\last-ip.txt`.)
-
-**5. לחכות לתעודה** (עד 60 דקות אחרי שה-DNS מצביע נכון):
-```powershell
-powershell -ExecutionPolicy Bypass -File deploy\status.ps1 -Wait
-```
-`FAILED_NOT_VISIBLE` = רשומת ה-A לא מצביעה על ה-IP. בודקים ב-No-IP שיש **רק** רשומה אחת, עם ה-IP הנכון, ו-Google ינסה שוב לבד.
-
-**6. אימות מלא:**
-```powershell
-powershell -ExecutionPolicy Bypass -File deploy\verify.ps1
-```
-התוצאות נכתבות ל-`docs\A4_VERIFY_RESULTS.md`. (בזמן שהתעודה עוד ב-PROVISIONING, לאבחון בלבד: `verify.ps1 -ViaIp`.)
-
-**7. קובץ ההגשה:**
-```powershell
-powershell -ExecutionPolicy Bypass -File deploy\make-submission.ps1
-```
-← מגישים **רק** את `submission\rewind.json`.
-
-**8. אחר כך:**
-- **לאשר את ה-hostname ב-No-IP כל 30 יום.** לשים תזכורת ביומן, אחרת האתר נופל.
-- לבדוק את האתר מהטלפון ומהמחשב של השותפה, עם מצלמה אמיתית.
-- **לא לשדרג את חשבון ה-Free Trial (Upgrade).**
-- אחרי שהציון התקבל: `deploy\teardown.ps1 -Yes` (אחרת זה כ-40–50$ לחודש מהקרדיט).
-
-### Atlas בלי CLI (אם `atlas auth login` לא מתאים)
-1. https://cloud.mongodb.com ← New Project `rewind` ← Create cluster: **M0 (Free)**, Provider **Google Cloud**, Region **Belgium (europe-west1)**, שם `rewind`.
-2. Database Access ← Add user `rewind-app`, Password: Autogenerate (32+ תווים), Role: **readWrite** על DB `rewind` בלבד (Specific Privileges).
-3. Network Access ← Add IP Address ← `0.0.0.0/0` (ל-Cloud Run אין IP קבוע; ראו DECISIONS D-062).
-4. Connect ← Drivers ← להעתיק את ה-URI, להחליף `<db_password>`, ולהוסיף `/rewind` לפני ה-`?`.
-5. לשמור את ה-URI **בקובץ** `deploy\.secrets\mongodb_uri.txt`. התיקייה ב-.gitignore. **לא להדביק בצ'אט.**
-6. `deploy\deploy.ps1`: הסקריפט יוצר מהקובץ את הסוד ב-Secret Manager **ומוחק את הקובץ**.
-
-### מה נבדק בלי ענן, ומה עוד לא
-ראו `docs\A4_TEST_REPORT.md`: הקוד המוכן לענן, אותה תמונה בשני מצבים, ה-DryRun של הסקריפטים, וה-E2E של מטלה 3 מול compose ומול תיקייה ריקה, כולם ירוקים. **כל בדיקות הענן עצמן (דומיין, תעודה, 2 מופעים, uptime) עוד לא רצו.**
+**ואז:**
+1. להגיש את `submission\rewind.json` (רק אותו).
+2. **לאשר את ה-hostname ב-No-IP כל 30 יום**: המייל מ-No-IP מגיע לפני שהוא פג. לשים תזכורת ביומן.
+3. לבדוק את האתר מהטלפון ומהמחשב של תמר, עם מצלמה אמיתית.
+4. **לא לשדרג את חשבון ה-Free Trial.**
+5. אחרי שהציון התקבל: `deploy\teardown.ps1 -Yes` (אחרת זה כ-200 ILS לחודש מהקרדיט). צריך את האתר שוב לפרויקט הסופי: `deploy\deploy.ps1` מרים הכול מחדש (ה-IP ישתנה, ואז מעדכנים שוב ב-No-IP).
+6. מטלה 3: ב-PROJECT_INFO חסרים עדיין אימיילי ה-grunitech (`authors`): `./scripts/package_submission.sh --authors "a@grunitech.com,b@grunitech.com"` (ב-Git Bash).
 
 ---
 
@@ -72,7 +35,8 @@ powershell -ExecutionPolicy Bypass -File deploy\make-submission.ps1
 כל השאר כבר בנוי ונבדק (ראו `docs/TEST_REPORT.md`). נשארו רק דברים שצריכים את הפרטים או את החשבונות שלכן.
 הפקודות כתובות ל-**Git Bash** (ב-Windows) או לטרמינל ב-Mac/Linux, מתוך תיקיית הפרויקט `rewind/`.
 
-## 1. להעלות את התמונות ל-Docker Hub (חובה, בלי זה הבודק לא יכול להריץ)
+## 1. ✅ בוצע (18.11.2026): התמונות ב-Docker Hub
+`naamalaufer/rewind-backend:1.1.0` ו-`naamalaufer/rewind-frontend:1.1.0` ציבוריות (נבדקה משיכה בלי התחברות), `docker-compose.yml` מעודכן, ו-`assignment3.zip` נבנה מחדש ונבדק בתיקייה ריקה. לגרסה חדשה בעתיד:
 ```bash
 docker login                                   # עם המשתמש של Docker Hub
 DOCKERHUB_USER=<שם-המשתמש-שלך> ./scripts/build_and_push.sh   # tag 1.1.0 (אותו קוד שרץ בענן)
