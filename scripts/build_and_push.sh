@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 : "${DOCKERHUB_USER:?set DOCKERHUB_USER, e.g. DOCKERHUB_USER=yourname ./scripts/build_and_push.sh}"
-TAG="${TAG:-1.0.0}"
+TAG="${TAG:-1.1.0}"
 
 bash scripts/prepare_assets.sh   # bakes the ONNX model into the frontend build context
 
