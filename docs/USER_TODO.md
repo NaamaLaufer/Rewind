@@ -6,13 +6,21 @@
 רשומת ה-A ב-No-IP = `8.233.237.59`, התעודה ACTIVE, ו-`deploy\verify.ps1` ירוק כולו (13/13 E2E מול הדומיין). `submission\rewind.json` נוצר ונבדק.
 אם משהו ישתנה: `deploy\status.ps1` ואז `deploy\verify.ps1`.
 
+**תיקון קטן שמחכה לאישור שלך (D-068):** הסרטון לא מתחיל לבד אם לוחצים "הפעלת מצלמה" מיד אחרי פתיחתו. התיקון מוכן ב-branch `a4/fix-player-ready`. כדי להעלות אותו:
+```powershell
+gh pr create --base main --head a4/fix-player-ready --fill; gh pr merge --merge
+git checkout main; git pull
+powershell -ExecutionPolicy Bypass -File deploy\redeploy.ps1   # בונה 1.1.0 מחדש: Artifact Registry + Docker Hub + Cloud Run
+```
+ואחר כך למחוק מ-`known_issues` ב-`PROJECT_INFO.docx` את המשפט על "הפעלת מצלמה" מיד אחרי הפתיחה, ולהריץ `./scripts/package_submission.sh` (ב-Git Bash).
+
 **ואז:**
 1. להגיש את `submission\rewind.json` (רק אותו).
 2. **לאשר את ה-hostname ב-No-IP כל 30 יום**: המייל מ-No-IP מגיע לפני שהוא פג. לשים תזכורת ביומן.
 3. לבדוק את האתר מהטלפון ומהמחשב של תמר, עם מצלמה אמיתית.
 4. **לא לשדרג את חשבון ה-Free Trial.**
 5. אחרי שהציון התקבל: `deploy\teardown.ps1 -Yes` (אחרת זה כ-200 ILS לחודש מהקרדיט). צריך את האתר שוב לפרויקט הסופי: `deploy\deploy.ps1` מרים הכול מחדש (ה-IP ישתנה, ואז מעדכנים שוב ב-No-IP).
-6. מטלה 3: ב-PROJECT_INFO חסרים עדיין אימיילי ה-grunitech (`authors`): `./scripts/package_submission.sh --authors "a@grunitech.com,b@grunitech.com"` (ב-Git Bash).
+6. ✅ מטלה 3: `PROJECT_INFO.docx` (בשורש) מעודכן ותואם לאתר, ו-`assignment3.zip` נבנה ממנו ונבדק בתיקייה ריקה (18.11).
 
 ---
 

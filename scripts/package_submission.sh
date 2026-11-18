@@ -27,8 +27,15 @@ EOF
 fi
 
 # 2) PROJECT_INFO.docx
+# PROJECT_INFO.docx in the repo root = the team's own, hand-edited version (emails, sample link):
+# use it as is. Only without it, generate one from scripts/make_project_info.py.
+if [ -f PROJECT_INFO.docx ]; then
+  cp PROJECT_INFO.docx submission/PROJECT_INFO.docx
+  echo "using PROJECT_INFO.docx from the repo root"
+else
 MSYS_NO_PATHCONV=1 docker run --rm -v "$PWD:/w" -w /w python:3.12-slim \
   sh -c "pip install -q --root-user-action=ignore python-docx==1.2.0 && python scripts/make_project_info.py ${AUTHORS_ARG[*]:-}"
+fi
 
 # 3) the zip (python zipfile: works the same on Windows / macOS / Linux)
 cp docker-compose.yml submission/docker-compose.yml
