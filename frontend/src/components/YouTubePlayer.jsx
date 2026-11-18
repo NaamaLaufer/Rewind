@@ -36,20 +36,35 @@ const YouTubePlayer = forwardRef(function YouTubePlayer({ videoId, onDuration, o
   const hostRef = useRef(null);
   const playerRef = useRef(null);
   const [error, setError] = useState(null);
+  // playVideo()/seekTo() called before the player fired onReady are silently ignored by YouTube.
+  // Remember them and apply them on onReady (e.g. "הפעלת מצלמה" clicked 1-2 s after opening).
+  const readyRef = useRef(false);
+  const pendingRef = useRef({ seek: null, play: false });
   const cb = useRef({ onDuration, onStateChange });
   cb.current = { onDuration, onStateChange };
 
   useImperativeHandle(ref, () => ({
     getCurrentTime: () => playerRef.current?.getCurrentTime?.() ?? 0,
     getDuration: () => playerRef.current?.getDuration?.() ?? 0,
-    seekTo: (s) => playerRef.current?.seekTo?.(Math.max(0, s), true),
-    play: () => playerRef.current?.playVideo?.(),
-    pause: () => playerRef.current?.pauseVideo?.(),
+    seekTo: (s) => {
+      if (readyRef.current) playerRef.current?.seekTo?.(Math.max(0, s), true);
+      else pendingRef.current.seek = Math.max(0, s);
+    },
+    play: () => {
+      if (readyRef.current) playerRef.current?.playVideo?.();
+      else pendingRef.current.play = true;
+    },
+    pause: () => {
+      pendingRef.current.play = false;
+      playerRef.current?.pauseVideo?.();
+    },
     isPlaying: () => playerRef.current?.getPlayerState?.() === 1,
   }));
 
   useEffect(() => {
     let destroyed = false;
+    readyRef.current = false;
+    pendingRef.current = { seek: null, play: false };
     const reportDuration = () => {
       const d = playerRef.current?.getDuration?.();
       if (d > 0) cb.current.onDuration?.(d);
@@ -65,7 +80,14 @@ const YouTubePlayer = forwardRef(function YouTubePlayer({ videoId, onDuration, o
           height: "100%",
           playerVars: { rel: 0, playsinline: 1, modestbranding: 1, origin: window.location.origin },
           events: {
-            onReady: reportDuration,
+            onReady: () => {
+              readyRef.current = true;
+              reportDuration();
+              const p = pendingRef.current;
+              if (p.seek !== null) playerRef.current?.seekTo?.(p.seek, true);
+              if (p.play) playerRef.current?.playVideo?.();
+              pendingRef.current = { seek: null, play: false };
+            },
             onStateChange: (e) => {
               reportDuration();
               cb.current.onStateChange?.(e.data);
